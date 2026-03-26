@@ -44,7 +44,9 @@
 
 ## Key Patterns
 - Git commands: always run from repo root, not from `scheduler/` (git add/commit fail with path errors otherwise)
-- Platform adapters loaded via `importlib` in `check_options.py`; class discovered by `endswith("ExchangeAdapter")` — all adapter classes must use that suffix
+- Adding a new platform: (1) `platforms/<name>/adapter.py` + `__init__.py`, (2) `shared_scripts/check_<name>.py`, (3) `executor.go` (result types + runner), (4) `config.go` (prefix inference + validation), (5) `fees.go` (fee dispatch), (6) `main.go` (dispatch case + helpers), (7) `init.go` (wizard + generateConfig), (8) `pyproject.toml` (deps)
+- Adding options to an existing platform: extend adapter with Protocol methods (`get_vol_metrics`, `get_real_expiry`, `get_real_strike`, `get_premium_and_greeks`), add platform to `check_options.py` usage + `CalculateOptionFee` dispatch, add to init wizard `OptionPlatforms`; no main.go/executor.go changes needed (options dispatch is platform-agnostic)
+- Platform adapters loaded via `importlib` in `check_options.py`; class discovered by `endswith("ExchangeAdapter")` — only one adapter class per file; `_fetch_ohlcv_closes()` supports adapter-aware fallback via `get_ohlcv_closes()` method for non-BinanceUS platforms
 - Scheduler communicates with Python scripts via subprocess stdout JSON; scripts must always output valid JSON even on error
 - Python scripts exit 1 on error (Go parses JSON from stdout regardless of exit code)
 - Option positions stored in `StrategyState.OptionPositions map[string]*OptionPosition`
@@ -53,6 +55,7 @@
 - Audit lock balance: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`
 - Platform dispatch: `StrategyConfig.Platform` field (inferred from ID prefix in LoadConfig); use `s.Platform == "ibkr"` not ID prefix checks
 - ID prefix → platform: `hl-` → hyperliquid, `ibkr-` → ibkr, `deribit-` → deribit, `ts-` → topstep, `rh-` → robinhood, else → binanceus
+- Robinhood options use stock symbols (SPY, QQQ, AAPL) not crypto assets; strategy IDs: `rh-ccall-spy`, `rh-vol-qqq`; options config uses `--platform=robinhood` arg to check_options.py
 - Strategy types: "spot", "options", "perps", "futures" — perps paper mode reuses `ExecuteSpotSignal`; live mode calls `RunHyperliquidExecute` before state update; futures use `ExecuteFuturesSignal` with whole-contract sizing and margin-based budgeting
 - Hyperliquid sys.path conflict: SDK installs as `hyperliquid` package — clashes with `platforms/hyperliquid/`; fix: add `platforms/hyperliquid/` directly to sys.path (not `platforms/`), then `from adapter import HyperliquidExchangeAdapter`
 - Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0% robinhood, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades); `CalculateFuturesFee(contracts, feePerContract)` and `CalculatePlatformFuturesFee(sc, contracts)` for futures per-contract fees
