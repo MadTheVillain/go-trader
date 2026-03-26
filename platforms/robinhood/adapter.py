@@ -1,8 +1,9 @@
 """
-Robinhood Crypto Exchange Adapter.
+Robinhood Exchange Adapter.
 
-Supports paper (signal-only using yfinance for OHLCV, no credentials needed) and
-live (real orders via robin_stocks, credentials required) modes.
+Supports crypto spot trading and US stock options.
+Paper mode: yfinance for OHLCV/prices, Black-Scholes for options pricing.
+Live mode: robin_stocks for prices/chains/orders, TOTP MFA authentication.
 
 Environment variables:
     ROBINHOOD_USERNAME     — Robinhood account email/username
@@ -12,6 +13,11 @@ Environment variables:
 
 import os
 import sys
+import math
+from datetime import datetime, timezone, timedelta
+from typing import Tuple
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
 # Yahoo Finance crypto symbol mapping (paper mode OHLCV + fallback prices)
 YAHOO_CRYPTO_MAP = {
@@ -27,14 +33,30 @@ YAHOO_CRYPTO_MAP = {
     "SHIB": "SHIB-USD",
 }
 
+# Standard equity options strike intervals
+STRIKE_INTERVALS = [
+    (100, 1),    # under $100: $1 increments
+    (500, 5),    # $100-$500: $5 increments
+    (float('inf'), 10),  # over $500: $10 increments
+]
+
+
+def _get_strike_interval(price: float) -> float:
+    """Return standard equity options strike interval for given price."""
+    for threshold, interval in STRIKE_INTERVALS:
+        if price < threshold:
+            return interval
+    return 10
+
 
 class RobinhoodExchangeAdapter:
     """
-    Exchange adapter for Robinhood crypto trading.
+    Exchange adapter for Robinhood crypto + stock options trading.
 
-    Paper mode:  no credentials needed; uses yfinance for OHLCV and price data.
+    Paper mode:  no credentials needed; uses yfinance for OHLCV and price data,
+                 Black-Scholes for options pricing.
     Live mode:   requires ROBINHOOD_USERNAME, ROBINHOOD_PASSWORD, ROBINHOOD_TOTP_SECRET;
-                 uses robin_stocks for live prices and order execution.
+                 uses robin_stocks for live prices, options chains, and order execution.
     """
 
     def __init__(self, mode="paper"):
@@ -84,17 +106,28 @@ class RobinhoodExchangeAdapter:
         return "robinhood"
 
     # ─────────────────────────────────────────────
-    # Market data
+    # Market data (crypto + stocks)
     # ─────────────────────────────────────────────
 
+    def _resolve_yahoo_symbol(self, symbol: str) -> str:
+        """Resolve symbol to yfinance ticker. Crypto uses map, stocks pass through."""
+        return YAHOO_CRYPTO_MAP.get(symbol.upper(), symbol.upper())
+
     def get_price(self, symbol: str) -> float:
-        """Get current crypto price. Uses robin_stocks if logged in, else yfinance."""
+        """Get current price. Uses robin_stocks if logged in, else yfinance."""
         if self._logged_in:
             try:
                 import robin_stocks.robinhood as rh
-                quote = rh.crypto.get_crypto_quote(symbol)
-                if quote and quote.get("mark_price"):
-                    return float(quote["mark_price"])
+                # Try crypto first
+                if symbol.upper() in YAHOO_CRYPTO_MAP:
+                    quote = rh.crypto.get_crypto_quote(symbol)
+                    if quote and quote.get("mark_price"):
+                        return float(quote["mark_price"])
+                else:
+                    # Stock quote
+                    prices = rh.stocks.get_latest_price(symbol)
+                    if prices and prices[0]:
+                        return float(prices[0])
             except Exception as e:
                 print(f"[robinhood] robin_stocks price error for {symbol}: {e}", file=sys.stderr)
         return self._get_yahoo_price(symbol)
@@ -105,21 +138,178 @@ class RobinhoodExchangeAdapter:
 
     def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
         """
-        Fetch OHLCV candles via yfinance (robin_stocks has no OHLCV endpoint).
+        Fetch OHLCV candles via yfinance.
 
         Returns list of [timestamp_ms, open, high, low, close, volume].
         """
         return self._get_yahoo_ohlcv(symbol, interval, limit)
+
+    def get_ohlcv_closes(self, symbol: str, timeframe: str = "4h", limit: int = 100, min_len: int = 30) -> list:
+        """Fetch closing prices via yfinance. Used by check_options.py momentum strategy."""
+        candles = self._get_yahoo_ohlcv(symbol, timeframe, limit)
+        if not candles or len(candles) < min_len:
+            return None
+        return [c[4] for c in candles]
+
+    # ─────────────────────────────────────────────
+    # Options Protocol methods
+    # ─────────────────────────────────────────────
+
+    def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
+        """Compute 14-day historical vol and IV rank from yfinance OHLCV data."""
+        try:
+            import yfinance as yf
+            yahoo_sym = self._resolve_yahoo_symbol(underlying)
+            ticker = yf.Ticker(yahoo_sym)
+            hist = ticker.history(period="90d", interval="1d")
+            if hist.empty or len(hist) < 15:
+                return 0.30, 50.0
+            closes = hist["Close"].tolist()
+            returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
+            if len(returns) < 14:
+                return 0.30, 50.0
+
+            w = 14
+            mean = sum(returns[-w:]) / w
+            variance = sum((r - mean) ** 2 for r in returns[-w:]) / w
+            vol = math.sqrt(variance) * math.sqrt(252)  # 252 trading days for stocks
+
+            # IV rank (rolling HV comparison)
+            hvs = []
+            for i in range(len(returns) - w + 1):
+                chunk = returns[i:i + w]
+                m = sum(chunk) / w
+                v = sum((r - m) ** 2 for r in chunk) / w
+                hvs.append(math.sqrt(v) * math.sqrt(252) * 100)
+            current_hv = vol * 100
+            hv_min, hv_max = min(hvs), max(hvs)
+            if hv_max > hv_min:
+                iv_rank = (current_hv - hv_min) / (hv_max - hv_min) * 100
+                iv_rank = round(min(max(iv_rank, 0.0), 100.0), 1)
+            else:
+                iv_rank = 50.0
+
+            return round(vol, 4), iv_rank
+        except Exception as e:
+            print(f"[robinhood] vol_metrics error for {underlying}: {e}", file=sys.stderr)
+            return 0.30, 50.0
+
+    def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
+        """Return options expiry closest to target_dte.
+
+        Live mode: fetches real expiry dates from Robinhood.
+        Paper mode: synthetic expiry (today + target_dte).
+        """
+        if self._logged_in:
+            try:
+                import robin_stocks.robinhood as rh
+                chain = rh.options.get_chains(underlying)
+                if chain and chain.get("expiration_dates"):
+                    today = datetime.now(timezone.utc).date()
+                    target_date = today + timedelta(days=target_dte)
+                    best_expiry = None
+                    best_diff = float('inf')
+                    for exp_str in chain["expiration_dates"]:
+                        exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                        diff = abs((exp_date - target_date).days)
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_expiry = exp_str
+                    if best_expiry:
+                        actual_dte = (datetime.strptime(best_expiry, "%Y-%m-%d").date() - today).days
+                        return best_expiry, max(actual_dte, 1)
+            except Exception as e:
+                print(f"[robinhood] get_real_expiry error: {e}", file=sys.stderr)
+
+        # Paper mode fallback: synthetic expiry
+        expiry_dt = datetime.now(timezone.utc) + timedelta(days=target_dte)
+        return expiry_dt.strftime("%Y-%m-%d"), target_dte
+
+    def get_real_strike(self, underlying: str, expiry: str,
+                        option_type: str, target_strike: float) -> float:
+        """Return strike closest to target.
+
+        Live mode: fetches real strikes from Robinhood.
+        Paper mode: rounds to standard equity options interval.
+        """
+        if self._logged_in:
+            try:
+                import robin_stocks.robinhood as rh
+                options = rh.options.find_tradable_options(
+                    underlying, expirationDate=expiry,
+                    optionType=option_type
+                )
+                if options:
+                    best_strike = None
+                    best_diff = float('inf')
+                    for opt in options:
+                        strike = float(opt.get("strike_price", 0))
+                        if strike > 0:
+                            diff = abs(strike - target_strike)
+                            if diff < best_diff:
+                                best_diff = diff
+                                best_strike = strike
+                    if best_strike is not None:
+                        return best_strike
+            except Exception as e:
+                print(f"[robinhood] get_real_strike error: {e}", file=sys.stderr)
+
+        # Paper mode fallback: round to standard interval
+        interval = _get_strike_interval(target_strike)
+        return round(target_strike / interval) * interval
+
+    def get_premium_and_greeks(self, underlying: str, option_type: str,
+                                strike: float, expiry: str, dte: float,
+                                spot: float, vol: float) -> Tuple[float, float, dict]:
+        """Estimate premium and greeks.
+
+        Live mode: fetches real market data from Robinhood.
+        Paper mode: Black-Scholes via shared_tools/pricing.py.
+        """
+        if self._logged_in:
+            try:
+                import robin_stocks.robinhood as rh
+                options = rh.options.find_tradable_options(
+                    underlying, expirationDate=expiry,
+                    strikePrice=str(strike), optionType=option_type
+                )
+                if options:
+                    opt_id = options[0].get("id") or options[0].get("url", "").split("/")[-2]
+                    if opt_id:
+                        market_data = rh.options.get_option_market_data_by_id(opt_id)
+                        if market_data and isinstance(market_data, list) and market_data[0]:
+                            md = market_data[0]
+                            mark = float(md.get("adjusted_mark_price", 0) or 0)
+                            greeks = {
+                                "delta": float(md.get("delta", 0) or 0),
+                                "gamma": float(md.get("gamma", 0) or 0),
+                                "theta": float(md.get("theta", 0) or 0),
+                                "vega": float(md.get("vega", 0) or 0),
+                            }
+                            # mark is per-share price, multiply by 100 for per-contract
+                            premium_usd = mark * 100
+                            mark_pct = (mark / spot) if spot > 0 else 0.0
+                            return round(mark_pct, 6), round(premium_usd, 2), greeks
+            except Exception as e:
+                print(f"[robinhood] get_premium_and_greeks error: {e}", file=sys.stderr)
+
+        # Paper mode fallback: Black-Scholes
+        from pricing import bs_price_and_greeks
+        if vol <= 0:
+            vol = 0.30  # stock default
+        price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
+        # price_usd is per-share; multiply by 100 for per-contract
+        premium_usd = price_usd * 100
+        mark_pct = (price_usd / spot) if spot > 0 else 0.0
+        return round(mark_pct, 6), round(premium_usd, 2), greeks
 
     # ─────────────────────────────────────────────
     # Yahoo Finance helpers
     # ─────────────────────────────────────────────
 
     def _get_yahoo_price(self, symbol: str) -> float:
-        """Fetch current price via yfinance."""
-        yahoo_sym = YAHOO_CRYPTO_MAP.get(symbol)
-        if not yahoo_sym:
-            return 0.0
+        """Fetch current price via yfinance. Works for both crypto and stocks."""
+        yahoo_sym = self._resolve_yahoo_symbol(symbol)
         try:
             import yfinance as yf
             ticker = yf.Ticker(yahoo_sym)
@@ -135,10 +325,8 @@ class RobinhoodExchangeAdapter:
             return 0.0
 
     def _get_yahoo_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
-        """Fetch OHLCV via yfinance for crypto symbols."""
-        yahoo_sym = YAHOO_CRYPTO_MAP.get(symbol)
-        if not yahoo_sym:
-            return []
+        """Fetch OHLCV via yfinance. Works for both crypto and stocks."""
+        yahoo_sym = self._resolve_yahoo_symbol(symbol)
         try:
             import yfinance as yf
             yf_interval = interval

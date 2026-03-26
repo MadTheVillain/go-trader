@@ -97,6 +97,9 @@ var defaultFuturesStrategies = []stratDef{
 // Supported CME futures symbols for the init wizard.
 var supportedFuturesSymbols = []string{"ES", "NQ", "MES", "MNQ", "CL", "GC"}
 
+// Supported stock symbols for Robinhood options.
+var supportedStockSymbols = []string{"SPY", "QQQ", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA", "META"}
+
 // Live strategy lists — populated by discoverStrategies() at startup.
 // Tests set these via init() to avoid Python dependency.
 var (
@@ -163,41 +166,42 @@ func discoverStrategies() {
 
 // InitOptions captures all user choices from the interactive wizard.
 type InitOptions struct {
-	OutputPath            string
-	Assets                []string // selected asset names, e.g. ["BTC", "ETH"]
-	EnableSpot            bool
-	EnableOptions         bool
-	EnablePerps           bool
-	OptionPlatforms       []string // "deribit", "ibkr", or both
-	PerpsMode             string   // "paper" or "live"
-	SpotStrategies        []string // selected spot strategy IDs
-	IncludePairs          bool
-	OptStrategies         []string // selected options strategy IDs
-	PerpsStrategies       []string // selected perps strategy IDs (auto-populated if empty)
-	SpotCapital           float64
-	OptionsCapital        float64
-	PerpsCapital          float64
-	SpotDrawdown          float64
-	OptionsDrawdown       float64
-	PerpsDrawdown         float64
-	EnableFutures         bool
-	FuturesMode           string   // "paper" or "live"
-	FuturesStrategies     []string // selected futures strategy IDs
-	FuturesSymbols        []string // selected CME symbols (e.g. ["ES", "MES"])
-	FuturesCapital        float64
-	FuturesDrawdown       float64
-	FuturesFeePerContract float64
-	EnableRobinhood       bool
-	RobinhoodMode         string   // "paper" or "live"
-	RobinhoodStrategies   []string // selected crypto strategy IDs
-	RobinhoodCapital      float64
-	RobinhoodDrawdown     float64
-	DiscordEnabled        bool
-	DiscordOwnerID        string            // Discord user ID for DM features (upgrade prompts, config migration)
-	SpotChannelID         string            // deprecated: use ChannelMap
-	OptionsChannelID      string            // deprecated: use ChannelMap
-	ChannelMap            map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
-	AutoUpdate            string            // "off", "daily", "heartbeat" (default: "off")
+	OutputPath              string
+	Assets                  []string // selected asset names, e.g. ["BTC", "ETH"]
+	EnableSpot              bool
+	EnableOptions           bool
+	EnablePerps             bool
+	OptionPlatforms         []string // "deribit", "ibkr", or both
+	PerpsMode               string   // "paper" or "live"
+	SpotStrategies          []string // selected spot strategy IDs
+	IncludePairs            bool
+	OptStrategies           []string // selected options strategy IDs
+	PerpsStrategies         []string // selected perps strategy IDs (auto-populated if empty)
+	SpotCapital             float64
+	OptionsCapital          float64
+	PerpsCapital            float64
+	SpotDrawdown            float64
+	OptionsDrawdown         float64
+	PerpsDrawdown           float64
+	EnableFutures           bool
+	FuturesMode             string   // "paper" or "live"
+	FuturesStrategies       []string // selected futures strategy IDs
+	FuturesSymbols          []string // selected CME symbols (e.g. ["ES", "MES"])
+	FuturesCapital          float64
+	FuturesDrawdown         float64
+	FuturesFeePerContract   float64
+	EnableRobinhood         bool
+	RobinhoodMode           string   // "paper" or "live"
+	RobinhoodStrategies     []string // selected crypto strategy IDs
+	RobinhoodCapital        float64
+	RobinhoodDrawdown       float64
+	RobinhoodOptionsSymbols []string // stock tickers for Robinhood options (e.g. ["SPY", "QQQ"])
+	DiscordEnabled          bool
+	DiscordOwnerID          string            // Discord user ID for DM features (upgrade prompts, config migration)
+	SpotChannelID           string            // deprecated: use ChannelMap
+	OptionsChannelID        string            // deprecated: use ChannelMap
+	ChannelMap              map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
+	AutoUpdate              string            // "off", "daily", "heartbeat" (default: "off")
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -275,11 +279,26 @@ func generateConfig(opts InitOptions) *Config {
 		for _, stratID := range opts.OptStrategies {
 			shortName := deriveShortName(stratID)
 			for _, platform := range opts.OptionPlatforms {
-				for _, assetName := range opts.Assets {
-					if assetName == "SOL" {
-						continue // options don't support SOL
+				// Robinhood options use stock symbols; others use crypto assets
+				var symbols []string
+				if platform == "robinhood" {
+					symbols = opts.RobinhoodOptionsSymbols
+					if len(symbols) == 0 {
+						symbols = []string{"SPY", "QQQ"}
 					}
-					id := fmt.Sprintf("%s-%s-%s", platform, shortName, strings.ToLower(assetName))
+				} else {
+					for _, a := range opts.Assets {
+						if a != "SOL" { // options don't support SOL
+							symbols = append(symbols, a)
+						}
+					}
+				}
+				for _, assetName := range symbols {
+					prefix := platform
+					if platform == "robinhood" {
+						prefix = "rh"
+					}
+					id := fmt.Sprintf("%s-%s-%s", prefix, shortName, strings.ToLower(assetName))
 					cfg.Strategies = append(cfg.Strategies, StrategyConfig{
 						ID:              id,
 						Type:            "options",
@@ -482,6 +501,15 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
+	// Auto-populate Robinhood options symbols.
+	if opts.EnableOptions {
+		for _, plt := range opts.OptionPlatforms {
+			if plt == "robinhood" && len(opts.RobinhoodOptionsSymbols) == 0 {
+				opts.RobinhoodOptionsSymbols = []string{"SPY", "QQQ"}
+			}
+		}
+	}
+
 	// Auto-populate Robinhood defaults.
 	if opts.EnableRobinhood {
 		if opts.RobinhoodMode == "" {
@@ -600,15 +628,32 @@ func runInit(args []string) int {
 	// Step 4: Options platform.
 	var optionPlatforms []string
 	if enableOptions {
-		platOptions := []string{"deribit", "ibkr", "both"}
+		platOptions := []string{"deribit", "ibkr", "robinhood", "all"}
 		platIdx := p.Choice("\nOptions platform:", platOptions, 0)
 		switch platOptions[platIdx] {
 		case "deribit":
 			optionPlatforms = []string{"deribit"}
 		case "ibkr":
 			optionPlatforms = []string{"ibkr"}
-		case "both":
-			optionPlatforms = []string{"deribit", "ibkr"}
+		case "robinhood":
+			optionPlatforms = []string{"robinhood"}
+		case "all":
+			optionPlatforms = []string{"deribit", "ibkr", "robinhood"}
+		}
+	}
+
+	// Step 4b: Robinhood options stock symbols.
+	var robinhoodOptionsSymbols []string
+	for _, plt := range optionPlatforms {
+		if plt == "robinhood" {
+			symIdxs := p.MultiSelect("\nSelect stock symbols for Robinhood options:", supportedStockSymbols, false)
+			for _, idx := range symIdxs {
+				robinhoodOptionsSymbols = append(robinhoodOptionsSymbols, supportedStockSymbols[idx])
+			}
+			if len(robinhoodOptionsSymbols) == 0 {
+				robinhoodOptionsSymbols = []string{"SPY", "QQQ"} // defaults
+			}
+			break
 		}
 	}
 
@@ -808,39 +853,40 @@ func runInit(args []string) int {
 	}
 
 	opts := InitOptions{
-		OutputPath:            outputPath,
-		Assets:                selectedAssets,
-		EnableSpot:            enableSpot,
-		EnableOptions:         enableOptions,
-		EnablePerps:           enablePerps,
-		OptionPlatforms:       optionPlatforms,
-		PerpsMode:             perpsMode,
-		SpotStrategies:        selectedSpotStrats,
-		IncludePairs:          includePairs,
-		OptStrategies:         selectedOptStrats,
-		PerpsStrategies:       perpsStratIDs,
-		SpotCapital:           spotCapital,
-		OptionsCapital:        optionsCapital,
-		PerpsCapital:          perpsCapital,
-		SpotDrawdown:          spotDrawdown,
-		OptionsDrawdown:       optionsDrawdown,
-		PerpsDrawdown:         perpsDrawdown,
-		EnableRobinhood:       enableRobinhood,
-		RobinhoodMode:         robinhoodMode,
-		RobinhoodStrategies:   robinhoodStratIDs,
-		RobinhoodCapital:      robinhoodCapital,
-		RobinhoodDrawdown:     robinhoodDrawdown,
-		EnableFutures:         enableFutures,
-		FuturesMode:           futuresMode,
-		FuturesStrategies:     futuresStratIDs,
-		FuturesSymbols:        futuresSymbols,
-		FuturesCapital:        futuresCapital,
-		FuturesDrawdown:       futuresDrawdown,
-		FuturesFeePerContract: futuresFeePerContract,
-		DiscordEnabled:        discordEnabled,
-		DiscordOwnerID:        discordOwnerID,
-		ChannelMap:            channelMap,
-		AutoUpdate:            autoUpdate,
+		OutputPath:              outputPath,
+		Assets:                  selectedAssets,
+		EnableSpot:              enableSpot,
+		EnableOptions:           enableOptions,
+		EnablePerps:             enablePerps,
+		OptionPlatforms:         optionPlatforms,
+		PerpsMode:               perpsMode,
+		SpotStrategies:          selectedSpotStrats,
+		IncludePairs:            includePairs,
+		OptStrategies:           selectedOptStrats,
+		PerpsStrategies:         perpsStratIDs,
+		SpotCapital:             spotCapital,
+		OptionsCapital:          optionsCapital,
+		PerpsCapital:            perpsCapital,
+		SpotDrawdown:            spotDrawdown,
+		OptionsDrawdown:         optionsDrawdown,
+		PerpsDrawdown:           perpsDrawdown,
+		RobinhoodOptionsSymbols: robinhoodOptionsSymbols,
+		EnableRobinhood:         enableRobinhood,
+		RobinhoodMode:           robinhoodMode,
+		RobinhoodStrategies:     robinhoodStratIDs,
+		RobinhoodCapital:        robinhoodCapital,
+		RobinhoodDrawdown:       robinhoodDrawdown,
+		EnableFutures:           enableFutures,
+		FuturesMode:             futuresMode,
+		FuturesStrategies:       futuresStratIDs,
+		FuturesSymbols:          futuresSymbols,
+		FuturesCapital:          futuresCapital,
+		FuturesDrawdown:         futuresDrawdown,
+		FuturesFeePerContract:   futuresFeePerContract,
+		DiscordEnabled:          discordEnabled,
+		DiscordOwnerID:          discordOwnerID,
+		ChannelMap:              channelMap,
+		AutoUpdate:              autoUpdate,
 	}
 
 	cfg := generateConfig(opts)

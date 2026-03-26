@@ -174,6 +174,10 @@ CME futures on TopStep. Live mode requires `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRE
 
 Same spot strategy suite as Binance US, running on Robinhood crypto. Paper mode uses Yahoo Finance for OHLCV data (no credentials needed). Live mode requires `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars.
 
+### Robinhood Stock Options (6 strategies, 4h interval)
+
+US equity options on SPY, QQQ, AAPL, etc. using the same options strategies as Deribit/IBKR (covered_calls, protective_puts, momentum_options, vol_mean_reversion, wheel, butterfly). Paper mode uses Black-Scholes pricing. Live mode uses robin_stocks for real options chains and greeks.
+
 ---
 
 ## Platforms
@@ -186,6 +190,7 @@ Same spot strategy suite as Binance US, running on Robinhood crypto. Paper mode 
 | Hyperliquid | Perps | BTC, ETH, SOL | Paper + live trading via SDK |
 | TopStep | Futures | ES, NQ, MES, MNQ, CL, GC | Paper (yfinance) + live trading via TopStepX API |
 | Robinhood | Crypto | BTC, ETH, SOL, DOGE, etc. | Paper (yfinance) + live trading via robin_stocks |
+| Robinhood | Options | SPY, QQQ, AAPL, MSFT, etc. | Paper (Black-Scholes) + live chains via robin_stocks |
 
 ---
 
@@ -371,6 +376,7 @@ journalctl -u go-trader -n 50           # recent logs
 | Hyperliquid Perps | 0.035% taker | ±0.05% |
 | TopStep Futures | Per-contract (configurable) | ±0.05% |
 | Robinhood Crypto | No commission (spread embedded) | ±0.05% |
+| Robinhood Options | $0.03/contract (regulatory fee) | — |
 
 ---
 

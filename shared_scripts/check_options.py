@@ -3,7 +3,7 @@
 Unified options strategy check script.
 Evaluates options strategies using a platform adapter.
 
-Usage: python3 check_options.py <strategy> <underlying> [--platform=deribit|ibkr]
+Usage: python3 check_options.py <strategy> <underlying> [--platform=deribit|ibkr|robinhood]
 """
 
 import sys
@@ -44,14 +44,22 @@ def _load_adapter(platform: str):
 
 # ── shared helpers ────────────────────────────────────────────────────────────
 
-def _fetch_ohlcv_closes(underlying, timeframe, limit, min_len):
-    """Fetch OHLCV from BinanceUS and return closing prices, or None if insufficient data."""
-    import ccxt
-    exchange = ccxt.binanceus({"enableRateLimit": True})
-    ohlcv = exchange.fetch_ohlcv(f"{underlying}/USDT", timeframe, limit=limit)
-    if not ohlcv or len(ohlcv) < min_len:
+def _fetch_ohlcv_closes(underlying, timeframe, limit, min_len, adapter=None):
+    """Fetch OHLCV closing prices. Uses adapter if available, else BinanceUS."""
+    # Try adapter's get_ohlcv_closes if available (e.g., Robinhood stocks)
+    if adapter is not None:
+        ohlcv_closes_fn = getattr(adapter, 'get_ohlcv_closes', None)
+        if ohlcv_closes_fn is not None:
+            return ohlcv_closes_fn(underlying, timeframe, limit, min_len)
+    try:
+        import ccxt
+        exchange = ccxt.binanceus({"enableRateLimit": True})
+        ohlcv = exchange.fetch_ohlcv(f"{underlying}/USDT", timeframe, limit=limit)
+        if not ohlcv or len(ohlcv) < min_len:
+            return None
+        return [c[4] for c in ohlcv]
+    except Exception:
         return None
-    return [c[4] for c in ohlcv]
 
 
 def _platform_extra(adapter, underlying: str) -> dict:
@@ -162,7 +170,7 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
 def evaluate_momentum_options(underlying, spot_price, vol_annual, iv_rank,
                                existing_positions, spot_positions, adapter):
     try:
-        closes = _fetch_ohlcv_closes(underlying, "4h", 100, 30)
+        closes = _fetch_ohlcv_closes(underlying, "4h", 100, 30, adapter=adapter)
         if closes is None:
             return 0, [], iv_rank
 

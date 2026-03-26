@@ -16,6 +16,9 @@ const (
 	// Hyperliquid perps taker fee
 	HyperliquidTakerFeePct = 0.00035 // 0.035% taker fee
 
+	// Robinhood options regulatory fee (per contract)
+	RobinhoodOptionFeeFixed = 0.03 // $0.03/contract (SEC/FINRA regulatory fee)
+
 	// Slippage simulation (random +/- this pct)
 	SlippagePct = 0.0005 // 0.05% (5 basis points)
 )
@@ -59,12 +62,21 @@ func CalculateIBKROptionFee(quantity float64) float64 {
 	return quantity * IBKROptionFeeFixed
 }
 
+// CalculateRobinhoodOptionFee calculates trading fee for Robinhood options.
+func CalculateRobinhoodOptionFee(quantity float64) float64 {
+	return quantity * RobinhoodOptionFeeFixed
+}
+
 // CalculateOptionFee dispatches to the appropriate fee calculator based on platform.
 func CalculateOptionFee(platform string, premiumUSD, quantity float64) float64 {
-	if platform == "ibkr" {
+	switch platform {
+	case "ibkr":
 		return CalculateIBKROptionFee(quantity)
+	case "robinhood":
+		return CalculateRobinhoodOptionFee(quantity)
+	default:
+		return CalculateDeribitOptionFee(premiumUSD)
 	}
-	return CalculateDeribitOptionFee(premiumUSD)
 }
 
 // CalculateFuturesFee calculates per-contract fee for futures trades.

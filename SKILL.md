@@ -942,6 +942,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    • Hyperliquid — perps trading: any HL-listed asset (paper + live)
    • TopStep     — futures trading: ES, NQ, MES, MNQ, CL, GC (paper + live)
    • Robinhood   — crypto trading: BTC, ETH, SOL, DOGE, etc. (paper via yfinance + live via robin_stocks)
+   • Robinhood   — stock options: SPY, QQQ, AAPL, etc. (paper via Black-Scholes + live via robin_stocks)
    • Custom      — add your own exchange via Step 9 (guided setup)
 
 2. AVAILABLE STRATEGIES
@@ -1182,3 +1183,16 @@ Each Robinhood strategy runs the spot strategy suite on crypto assets (BTC, ETH,
 **ID convention:** `rh-{strategy_short}-{asset}` (e.g. `rh-sma-btc`, `rh-rsi-eth`)
 
 Paper mode uses Yahoo Finance for OHLCV data (no credentials needed). For live trading, change `--mode=paper` to `--mode=live`. Requires `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars.
+
+### Robinhood Stock Options Entries
+
+Each Robinhood options strategy runs on US equity symbols (SPY, QQQ, AAPL, etc.):
+
+```json
+{"id": "rh-ccall-spy", "type": "options", "platform": "robinhood", "script": "shared_scripts/check_options.py", "args": ["covered_calls", "SPY", "--platform=robinhood"], "capital": 5000, "max_drawdown_pct": 10, "interval_seconds": 14400, "theta_harvest": {"enabled": true, "profit_target_pct": 60, "stop_loss_pct": 200, "min_dte_close": 3}}
+{"id": "rh-pput-qqq", "type": "options", "platform": "robinhood", "script": "shared_scripts/check_options.py", "args": ["protective_puts", "QQQ", "--platform=robinhood"], "capital": 5000, "max_drawdown_pct": 10, "interval_seconds": 14400, "theta_harvest": {"enabled": true, "profit_target_pct": 60, "stop_loss_pct": 200, "min_dte_close": 3}}
+```
+
+**ID convention:** `rh-{strategy_short}-{symbol}` (e.g. `rh-ccall-spy`, `rh-vol-qqq`)
+
+Paper mode uses Black-Scholes pricing (no credentials needed). Live mode uses robin_stocks for real options chains and greeks. Requires `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars.

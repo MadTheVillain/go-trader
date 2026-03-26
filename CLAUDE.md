@@ -22,7 +22,7 @@
   - `config_migration.go` — `CurrentConfigVersion = 2`; `NewFieldsSince(version)` returns new fields; `MigrateConfig(path, values)` atomic JSON patch + version bump; `runConfigMigrationDM(cfg, discord, configPath)` DMs owner per new field with 10min timeout
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
-  - `check_options.py` — unified options checker (`--platform=deribit|ibkr`)
+  - `check_options.py` — unified options checker (`--platform=deribit|ibkr|robinhood`)
   - `check_price.py` — price check script
   - `check_hyperliquid.py` — Hyperliquid perps checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders)
   - `check_topstep.py` — TopStep futures checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders)
@@ -33,7 +33,7 @@
   - `binanceus/adapter.py` — BinanceUSExchangeAdapter (spot only)
   - `hyperliquid/adapter.py` — HyperliquidExchangeAdapter (live perps prices, paper/live trading via `HYPERLIQUID_SECRET_KEY`)
   - `topstep/adapter.py` — TopStepExchangeAdapter (CME futures, paper mode via yfinance, live via TopStepX API)
-  - `robinhood/adapter.py` — RobinhoodExchangeAdapter (crypto spot, paper mode via yfinance, live via robin_stocks + TOTP MFA)
+  - `robinhood/adapter.py` — RobinhoodExchangeAdapter (crypto spot + stock options, paper mode via yfinance/Black-Scholes, live via robin_stocks + TOTP MFA)
 - `shared_tools/` — shared Python utilities (pricing.py, exchange_base.py, data_fetcher, storage)
 - `shared_strategies/` — shared strategy logic (spot/, options/, futures/)
 - `core/` — legacy data utilities used by backtest (data_fetcher, storage)
