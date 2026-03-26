@@ -311,6 +311,92 @@ func RunTopStepExecute(script, symbol, side string, contracts int) (*TopStepExec
 	return &result, stderrStr, nil
 }
 
+// RobinhoodResult is the JSON output from check_robinhood.py (signal check mode).
+type RobinhoodResult struct {
+	Strategy   string                 `json:"strategy"`
+	Symbol     string                 `json:"symbol"`
+	Timeframe  string                 `json:"timeframe"`
+	Signal     int                    `json:"signal"`
+	Price      float64                `json:"price"`
+	Indicators map[string]interface{} `json:"indicators"`
+	Mode       string                 `json:"mode"`
+	Platform   string                 `json:"platform"`
+	Timestamp  string                 `json:"timestamp"`
+	Error      string                 `json:"error,omitempty"`
+}
+
+// RobinhoodFill holds fill details from a live Robinhood order.
+type RobinhoodFill struct {
+	AvgPx    float64 `json:"avg_px"`
+	Quantity float64 `json:"quantity"`
+}
+
+// RobinhoodExecution is the execution block from check_robinhood.py --execute output.
+type RobinhoodExecution struct {
+	Action    string         `json:"action"`
+	Symbol    string         `json:"symbol"`
+	AmountUSD float64        `json:"amount_usd,omitempty"`
+	Quantity  float64        `json:"quantity,omitempty"`
+	Fill      *RobinhoodFill `json:"fill,omitempty"`
+}
+
+// RobinhoodExecuteResult is the top-level JSON from check_robinhood.py --execute.
+type RobinhoodExecuteResult struct {
+	Execution *RobinhoodExecution `json:"execution"`
+	Platform  string              `json:"platform"`
+	Timestamp string              `json:"timestamp"`
+	Error     string              `json:"error,omitempty"`
+}
+
+// RunRobinhoodCheck runs check_robinhood.py in signal check mode and parses the result.
+func RunRobinhoodCheck(script string, args []string) (*RobinhoodResult, string, error) {
+	stdout, stderr, err := RunPythonScript(script, args)
+	stderrStr := string(stderr)
+	if err != nil {
+		var result RobinhoodResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)
+	}
+
+	var result RobinhoodResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
+}
+
+// RunRobinhoodExecute runs check_robinhood.py in execute mode (live orders).
+func RunRobinhoodExecute(script, symbol, side string, amountUSD, quantity float64) (*RobinhoodExecuteResult, string, error) {
+	args := []string{
+		"--execute",
+		fmt.Sprintf("--symbol=%s", symbol),
+		fmt.Sprintf("--side=%s", side),
+		"--mode=live",
+	}
+	if side == "buy" {
+		args = append(args, fmt.Sprintf("--amount_usd=%g", amountUSD))
+	} else {
+		args = append(args, fmt.Sprintf("--quantity=%g", quantity))
+	}
+	stdout, stderr, err := RunPythonScript(script, args)
+	stderrStr := string(stderr)
+	if err != nil {
+		var result RobinhoodExecuteResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("execute error: %w (stderr: %s)", err, stderrStr)
+	}
+
+	var result RobinhoodExecuteResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse execute output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
+}
+
 // FetchPrices runs check_price.py and returns a map of symbol→price.
 func FetchPrices(symbols []string) (map[string]float64, error) {
 	stdout, stderr, err := RunPythonScript("shared_scripts/check_price.py", symbols)

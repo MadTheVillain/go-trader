@@ -146,6 +146,8 @@ func LoadConfig(path string) (*Config, error) {
 				cfg.Strategies[i].Platform = "hyperliquid"
 			case strings.HasPrefix(cfg.Strategies[i].ID, "ts-"):
 				cfg.Strategies[i].Platform = "topstep"
+			case strings.HasPrefix(cfg.Strategies[i].ID, "rh-"):
+				cfg.Strategies[i].Platform = "robinhood"
 			case cfg.Strategies[i].Type == "options":
 				cfg.Strategies[i].Platform = "deribit"
 			default:
@@ -258,6 +260,24 @@ func ValidateConfig(cfg *Config) error {
 					}
 					if os.Getenv("TOPSTEP_ACCOUNT_ID") == "" {
 						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_ACCOUNT_ID env var", prefix))
+					}
+					break
+				}
+			}
+		}
+
+		// Live-mode Robinhood crypto requires credentials.
+		if sc.Platform == "robinhood" {
+			for _, arg := range sc.Args {
+				if arg == "--mode=live" {
+					if os.Getenv("ROBINHOOD_USERNAME") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_USERNAME env var", prefix))
+					}
+					if os.Getenv("ROBINHOOD_PASSWORD") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_PASSWORD env var", prefix))
+					}
+					if os.Getenv("ROBINHOOD_TOTP_SECRET") == "" {
+						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_TOTP_SECRET env var", prefix))
 					}
 					break
 				}

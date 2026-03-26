@@ -187,6 +187,11 @@ type InitOptions struct {
 	FuturesCapital        float64
 	FuturesDrawdown       float64
 	FuturesFeePerContract float64
+	EnableRobinhood       bool
+	RobinhoodMode         string   // "paper" or "live"
+	RobinhoodStrategies   []string // selected crypto strategy IDs
+	RobinhoodCapital      float64
+	RobinhoodDrawdown     float64
 	DiscordEnabled        bool
 	DiscordOwnerID        string            // Discord user ID for DM features (upgrade prompts, config migration)
 	SpotChannelID         string            // deprecated: use ChannelMap
@@ -344,6 +349,28 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
+	// Robinhood crypto strategies (reuses spot strategies on Robinhood crypto).
+	usesRobinhood := false
+	if opts.EnableRobinhood {
+		usesRobinhood = true
+		for _, stratID := range opts.RobinhoodStrategies {
+			shortName := deriveShortName(stratID)
+			for _, assetName := range opts.Assets {
+				id := fmt.Sprintf("rh-%s-%s", shortName, strings.ToLower(assetName))
+				cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+					ID:              id,
+					Type:            "spot",
+					Platform:        "robinhood",
+					Script:          "shared_scripts/check_robinhood.py",
+					Args:            []string{stratID, assetName, "1h", fmt.Sprintf("--mode=%s", opts.RobinhoodMode)},
+					Capital:         opts.RobinhoodCapital,
+					MaxDrawdownPct:  opts.RobinhoodDrawdown,
+					IntervalSeconds: 3600,
+				})
+			}
+		}
+	}
+
 	if usesHyperliquid {
 		cfg.Platforms["hyperliquid"] = &PlatformConfig{
 			StateFile: "platforms/hyperliquid/state.json",
@@ -352,6 +379,12 @@ func generateConfig(opts InitOptions) *Config {
 	if usesTopstep {
 		cfg.Platforms["topstep"] = &PlatformConfig{
 			StateFile: "platforms/topstep/state.json",
+		}
+	}
+
+	if usesRobinhood {
+		cfg.Platforms["robinhood"] = &PlatformConfig{
+			StateFile: "platforms/robinhood/state.json",
 		}
 	}
 
@@ -401,7 +434,7 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		fmt.Fprintln(os.Stderr, "Error: at least one asset required")
 		return 1
 	}
-	if !opts.EnableSpot && !opts.EnableOptions && !opts.EnablePerps && !opts.EnableFutures {
+	if !opts.EnableSpot && !opts.EnableOptions && !opts.EnablePerps && !opts.EnableFutures && !opts.EnableRobinhood {
 		fmt.Fprintln(os.Stderr, "Error: at least one strategy type must be enabled")
 		return 1
 	}
@@ -446,6 +479,24 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 		if opts.FuturesDrawdown == 0 {
 			opts.FuturesDrawdown = 5
+		}
+	}
+
+	// Auto-populate Robinhood defaults.
+	if opts.EnableRobinhood {
+		if opts.RobinhoodMode == "" {
+			opts.RobinhoodMode = "paper"
+		}
+		if len(opts.RobinhoodStrategies) == 0 {
+			for _, s := range spotStrategies {
+				opts.RobinhoodStrategies = append(opts.RobinhoodStrategies, s.ID)
+			}
+		}
+		if opts.RobinhoodCapital == 0 {
+			opts.RobinhoodCapital = 500
+		}
+		if opts.RobinhoodDrawdown == 0 {
+			opts.RobinhoodDrawdown = 5
 		}
 	}
 
@@ -524,9 +575,9 @@ func runInit(args []string) int {
 	}
 
 	// Step 3: Strategy types.
-	stratTypeNames := []string{"spot", "options", "perps", "futures"}
+	stratTypeNames := []string{"spot", "options", "perps", "futures", "robinhood"}
 	stratTypeIdxs := p.MultiSelect("\nSelect strategy types:", stratTypeNames, false)
-	enableSpot, enableOptions, enablePerps, enableFutures := false, false, false, false
+	enableSpot, enableOptions, enablePerps, enableFutures, enableRobinhood := false, false, false, false, false
 	for _, idx := range stratTypeIdxs {
 		switch stratTypeNames[idx] {
 		case "spot":
@@ -537,9 +588,11 @@ func runInit(args []string) int {
 			enablePerps = true
 		case "futures":
 			enableFutures = true
+		case "robinhood":
+			enableRobinhood = true
 		}
 	}
-	if !enableSpot && !enableOptions && !enablePerps && !enableFutures {
+	if !enableSpot && !enableOptions && !enablePerps && !enableFutures && !enableRobinhood {
 		fmt.Println("No strategy types selected. Aborted.")
 		return 1
 	}
@@ -582,6 +635,15 @@ func runInit(args []string) int {
 		}
 		if len(futuresSymbols) == 0 {
 			futuresSymbols = []string{"ES", "MES"} // defaults
+		}
+	}
+
+	// Step 5c: Robinhood mode.
+	robinhoodMode := "paper"
+	if enableRobinhood {
+		modeOptions := []string{"paper (safe default — signal only, no orders)", "live (requires ROBINHOOD_USERNAME/PASSWORD/TOTP_SECRET)"}
+		if p.Choice("\nRobinhood trading mode:", modeOptions, 0) == 1 {
+			robinhoodMode = "live"
 		}
 	}
 
@@ -633,7 +695,7 @@ func runInit(args []string) int {
 		}
 	}
 
-	if len(selectedSpotStrats) == 0 && !includePairs && len(selectedOptStrats) == 0 && !enablePerps && !enableFutures {
+	if len(selectedSpotStrats) == 0 && !includePairs && len(selectedOptStrats) == 0 && !enablePerps && !enableFutures && !enableRobinhood {
 		fmt.Println("No strategies selected. Aborted.")
 		return 1
 	}
@@ -658,6 +720,13 @@ func runInit(args []string) int {
 	if enablePerps {
 		perpsCapital = p.Float("Perps capital per strategy ($)", 1000)
 		perpsDrawdown = p.Float("Perps max drawdown (%)", 5)
+	}
+
+	robinhoodCapital := 500.0
+	robinhoodDrawdown := 5.0
+	if enableRobinhood {
+		robinhoodCapital = p.Float("Robinhood crypto capital per strategy ($)", 500)
+		robinhoodDrawdown = p.Float("Robinhood max drawdown (%)", 5)
 	}
 
 	futuresCapital := 5000.0
@@ -697,6 +766,11 @@ func runInit(args []string) int {
 				channelMap["topstep"] = ch
 			}
 		}
+		if enableRobinhood {
+			if ch := p.String("Robinhood channel ID (leave blank to skip)", ""); ch != "" {
+				channelMap["robinhood"] = ch
+			}
+		}
 		discordOwnerID = p.String("Your Discord user ID for DM upgrades (leave blank to skip)", "")
 	}
 
@@ -725,6 +799,14 @@ func runInit(args []string) int {
 		}
 	}
 
+	// Collect Robinhood strategy IDs (auto-selected from spot strategies).
+	robinhoodStratIDs := make([]string, 0)
+	if enableRobinhood {
+		for _, s := range spotStrategies {
+			robinhoodStratIDs = append(robinhoodStratIDs, s.ID)
+		}
+	}
+
 	opts := InitOptions{
 		OutputPath:            outputPath,
 		Assets:                selectedAssets,
@@ -743,6 +825,11 @@ func runInit(args []string) int {
 		SpotDrawdown:          spotDrawdown,
 		OptionsDrawdown:       optionsDrawdown,
 		PerpsDrawdown:         perpsDrawdown,
+		EnableRobinhood:       enableRobinhood,
+		RobinhoodMode:         robinhoodMode,
+		RobinhoodStrategies:   robinhoodStratIDs,
+		RobinhoodCapital:      robinhoodCapital,
+		RobinhoodDrawdown:     robinhoodDrawdown,
 		EnableFutures:         enableFutures,
 		FuturesMode:           futuresMode,
 		FuturesStrategies:     futuresStratIDs,

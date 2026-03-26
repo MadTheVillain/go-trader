@@ -26,12 +26,14 @@
   - `check_price.py` — price check script
   - `check_hyperliquid.py` — Hyperliquid perps checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders)
   - `check_topstep.py` — TopStep futures checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders)
-- `platforms/` — platform-specific adapters (deribit, ibkr, binanceus, hyperliquid, topstep)
+  - `check_robinhood.py` — Robinhood crypto checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders; OHLCV via yfinance)
+- `platforms/` — platform-specific adapters (deribit, ibkr, binanceus, hyperliquid, topstep, robinhood)
   - `deribit/adapter.py` — DeribitExchangeAdapter (live quotes, real expiries/strikes)
   - `ibkr/adapter.py` — IBKRExchangeAdapter (CME strikes, Black-Scholes pricing)
   - `binanceus/adapter.py` — BinanceUSExchangeAdapter (spot only)
   - `hyperliquid/adapter.py` — HyperliquidExchangeAdapter (live perps prices, paper/live trading via `HYPERLIQUID_SECRET_KEY`)
   - `topstep/adapter.py` — TopStepExchangeAdapter (CME futures, paper mode via yfinance, live via TopStepX API)
+  - `robinhood/adapter.py` — RobinhoodExchangeAdapter (crypto spot, paper mode via yfinance, live via robin_stocks + TOTP MFA)
 - `shared_tools/` — shared Python utilities (pricing.py, exchange_base.py, data_fetcher, storage)
 - `shared_strategies/` — shared strategy logic (spot/, options/, futures/)
 - `core/` — legacy data utilities used by backtest (data_fetcher, storage)
@@ -50,10 +52,10 @@
 - Per-strategy loop uses 6 fine-grained lock phases: RLock(read inputs) → Lock(CheckRisk) → no lock(subprocess) → Lock(execute signal) → RLock/no lock/Lock(mark prices) → RLock(status log)
 - Audit lock balance: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`
 - Platform dispatch: `StrategyConfig.Platform` field (inferred from ID prefix in LoadConfig); use `s.Platform == "ibkr"` not ID prefix checks
-- ID prefix → platform: `hl-` → hyperliquid, `ibkr-` → ibkr, `deribit-` → deribit, `ts-` → topstep, else → binanceus
+- ID prefix → platform: `hl-` → hyperliquid, `ibkr-` → ibkr, `deribit-` → deribit, `ts-` → topstep, `rh-` → robinhood, else → binanceus
 - Strategy types: "spot", "options", "perps", "futures" — perps paper mode reuses `ExecuteSpotSignal`; live mode calls `RunHyperliquidExecute` before state update; futures use `ExecuteFuturesSignal` with whole-contract sizing and margin-based budgeting
 - Hyperliquid sys.path conflict: SDK installs as `hyperliquid` package — clashes with `platforms/hyperliquid/`; fix: add `platforms/hyperliquid/` directly to sys.path (not `platforms/`), then `from adapter import HyperliquidExchangeAdapter`
-- Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades); `CalculateFuturesFee(contracts, feePerContract)` and `CalculatePlatformFuturesFee(sc, contracts)` for futures per-contract fees
+- Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0% robinhood, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades); `CalculateFuturesFee(contracts, feePerContract)` and `CalculatePlatformFuturesFee(sc, contracts)` for futures per-contract fees
 - State persisted to `scheduler/state.json` (path set in config); per-platform files at `platforms/<name>/state.json`
 - `cfg.Discord.Channels` is `map[string]string` (not a struct); keys: "spot", "options", "hyperliquid", etc. — old `.Spot`/`.Options` field access is invalid
 - `cfg.Discord.OwnerID` — Discord user ID for DM upgrade prompts + config migration; loaded from `DISCORD_OWNER_ID` env var (takes priority over config file)

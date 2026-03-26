@@ -941,6 +941,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    • IBKR / CME  — options trading: BTC, ETH (CME Micro contracts, Black-Scholes pricing)
    • Hyperliquid — perps trading: any HL-listed asset (paper + live)
    • TopStep     — futures trading: ES, NQ, MES, MNQ, CL, GC (paper + live)
+   • Robinhood   — crypto trading: BTC, ETH, SOL, DOGE, etc. (paper via yfinance + live via robin_stocks)
    • Custom      — add your own exchange via Step 9 (guided setup)
 
 2. AVAILABLE STRATEGIES
@@ -954,6 +955,9 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
      same 6 strategies as Deribit — BTC + ETH each
    Futures (5 strategies, TopStep/CME):
      momentum, mean_reversion, rsi, macd, breakout
+   Robinhood Crypto (same 10 spot strategies):
+     sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
+     mean_reversion, volume_weighted, triple_ema, rsi_macd_combo
 
 3. ADJUSTABLE SETTINGS  (edit scheduler/config.json, then: sudo systemctl restart go-trader)
    Global:
@@ -969,12 +973,13 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
      theta_harvest.*   — profit_target_pct, stop_loss_pct, min_dte_close
    Discord:
      enabled           — true/false
-     channels          — map: "spot", "options", "hyperliquid", "topstep"
+     channels          — map: "spot", "options", "hyperliquid", "topstep", "robinhood"
      summary_interval  — how often to post summaries
    Environment (sudo systemctl edit go-trader):
      DISCORD_BOT_TOKEN, STATUS_AUTH_TOKEN
      BINANCE_API_KEY, BINANCE_API_SECRET
      TOPSTEP_API_KEY, TOPSTEP_API_SECRET, TOPSTEP_ACCOUNT_ID
+     ROBINHOOD_USERNAME, ROBINHOOD_PASSWORD, ROBINHOOD_TOTP_SECRET
 
 4. COMMANDS
    /menu       — this overview
@@ -1066,6 +1071,9 @@ Set via systemd override (`sudo systemctl edit go-trader`):
 | `TOPSTEP_API_KEY` | TopStep API key (futures live trading only) |
 | `TOPSTEP_API_SECRET` | TopStep API secret (futures live trading only) |
 | `TOPSTEP_ACCOUNT_ID` | TopStep account ID (futures live trading only) |
+| `ROBINHOOD_USERNAME` | Robinhood account email (crypto live trading only) |
+| `ROBINHOOD_PASSWORD` | Robinhood account password (crypto live trading only) |
+| `ROBINHOOD_TOTP_SECRET` | TOTP secret for Robinhood MFA (base32 string from authenticator setup) |
 
 ### Example: Adjusting a Strategy
 
@@ -1161,3 +1169,16 @@ Each TopStep strategy runs on CME futures symbols (ES, NQ, MES, MNQ, CL, GC):
 **ID convention:** `ts-{strategy}-{symbol}` (e.g. `ts-momentum-es`, `ts-rsi-nq`)
 
 For live trading, change `--mode=paper` to `--mode=live` and add `--execute` flag. Requires `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` env vars.
+
+### Robinhood Crypto Entries
+
+Each Robinhood strategy runs the spot strategy suite on crypto assets (BTC, ETH, SOL, etc.):
+
+```json
+{"id": "rh-sma-btc", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper"], "capital": 500, "max_drawdown_pct": 5, "interval_seconds": 3600}
+{"id": "rh-momentum-eth", "type": "spot", "platform": "robinhood", "script": "shared_scripts/check_robinhood.py", "args": ["momentum", "ETH", "1h", "--mode=paper"], "capital": 500, "max_drawdown_pct": 5, "interval_seconds": 3600}
+```
+
+**ID convention:** `rh-{strategy_short}-{asset}` (e.g. `rh-sma-btc`, `rh-rsi-eth`)
+
+Paper mode uses Yahoo Finance for OHLCV data (no credentials needed). For live trading, change `--mode=paper` to `--mode=live`. Requires `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` env vars.

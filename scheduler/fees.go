@@ -39,10 +39,14 @@ func CalculateHyperliquidFee(notionalUSD float64) float64 {
 
 // CalculatePlatformSpotFee dispatches spot fee calculation based on platform.
 func CalculatePlatformSpotFee(platform string, value float64) float64 {
-	if platform == "hyperliquid" {
+	switch platform {
+	case "hyperliquid":
 		return CalculateHyperliquidFee(value)
+	case "robinhood":
+		return 0 // Robinhood charges no crypto commission
+	default:
+		return CalculateSpotFee(value)
 	}
-	return CalculateSpotFee(value)
 }
 
 // CalculateDeribitOptionFee calculates trading fee for Deribit options
