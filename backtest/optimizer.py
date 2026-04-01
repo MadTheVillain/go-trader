@@ -4,9 +4,15 @@ Splits data into rolling in-sample/out-of-sample windows,
 optimizes parameters on in-sample, validates on out-of-sample.
 """
 
+import sys
+import os
 import itertools
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import timedelta
+
+# Resolve shared modules so backtest can run without PYTHONPATH hacks
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 import numpy as np
 import pandas as pd

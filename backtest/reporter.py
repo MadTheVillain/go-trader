@@ -3,9 +3,15 @@ Performance reporting — generates text-based reports with comprehensive metric
 Supports single-strategy reports, comparisons, and multi-asset analysis.
 """
 
+import sys
+import os
 import json
 from typing import List, Dict, Optional
 from datetime import datetime
+
+# Resolve shared modules so backtest can run without PYTHONPATH hacks
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 import numpy as np
 import pandas as pd

@@ -755,27 +755,25 @@ Run historical simulations using scripts in `backtest/`. All require `.venv/bin/
 
 ### Spot Strategy Backtest (`backtest/run_backtest.py`)
 
-Requires `PYTHONPATH=core:strategies` to resolve imports.
-
 ```bash
 # Single strategy run
-PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+.venv/bin/python3 backtest/run_backtest.py \
   --strategy <name> --symbol BTC/USDT --timeframe 1h --mode single
 
 # Compare two strategies
-PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+.venv/bin/python3 backtest/run_backtest.py \
   --strategy <name> --symbol BTC/USDT --timeframe 1h --mode compare
 
 # Multi-symbol sweep
-PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+.venv/bin/python3 backtest/run_backtest.py \
   --strategy <name> --timeframe 1h --mode multi
 
 # Parameter optimization
-PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+.venv/bin/python3 backtest/run_backtest.py \
   --strategy <name> --symbol BTC/USDT --timeframe 1h --mode optimize
 
 # Limit history (e.g. last 90 days)
-PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+.venv/bin/python3 backtest/run_backtest.py \
   --strategy <name> --symbol BTC/USDT --timeframe 1h --since 90
 ```
 
@@ -997,7 +995,7 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
 
 5. BACKTESTING
    Spot:
-     PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py \
+     .venv/bin/python3 backtest/run_backtest.py \
        --strategy <n> --symbol BTC/USDT --timeframe 1h \
        --mode single|compare|multi|optimize
    Options:

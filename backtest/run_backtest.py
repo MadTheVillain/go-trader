@@ -5,8 +5,13 @@ Main entry point for strategy evaluation.
 """
 
 import sys
+import os
 import argparse
 from typing import List, Optional
+
+# Resolve shared modules so backtest can run without PYTHONPATH hacks
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from data_fetcher import fetch_full_history, load_cached_data
 from strategies import apply_strategy, list_strategies, STRATEGY_REGISTRY
