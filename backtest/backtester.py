@@ -3,10 +3,16 @@ Backtesting engine — simulates strategy execution on historical data.
 Calculates comprehensive performance metrics.
 """
 
+import sys
+import os
 import json
 import math
 from datetime import datetime
 from typing import Callable, Optional
+
+# Resolve shared modules so backtest can run without PYTHONPATH hacks
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 import numpy as np
 import pandas as pd

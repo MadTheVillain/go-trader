@@ -36,9 +36,7 @@
   - `robinhood/adapter.py` — RobinhoodExchangeAdapter (crypto spot + stock options, paper mode via yfinance/Black-Scholes, live via robin_stocks + TOTP MFA)
 - `shared_tools/` — shared Python utilities (pricing.py, exchange_base.py, data_fetcher, storage)
 - `shared_strategies/` — shared strategy logic (spot/, options/, futures/)
-- `core/` — legacy data utilities used by backtest (data_fetcher, storage)
-- `strategies/` — legacy spot strategy logic used by backtest
-- `backtest/` — backtesting and paper trading scripts; `run_backtest.py` needs `PYTHONPATH=core:strategies`
+- `backtest/` — backtesting and paper trading scripts
 - `archive/` — retired/unused modules
 - `SKILL.md` — agent operations guide (setup, deploy, backtest commands)
 
@@ -76,7 +74,7 @@
 - Service file changes: `systemctl daemon-reload && systemctl restart go-trader`
 
 ## Backtest
-- `run_backtest.py`: `PYTHONPATH=core:strategies .venv/bin/python3 backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single`
+- `run_backtest.py`: `.venv/bin/python3 backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single`
 - `backtest_options.py`: `.venv/bin/python3 backtest/backtest_options.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 - `backtest_theta.py`: `.venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since YYYY-MM-DD --capital 10000`
 
