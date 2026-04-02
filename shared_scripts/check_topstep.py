@@ -32,7 +32,7 @@ def _make_dataframe(candles):
     return df
 
 
-def run_signal_check(strategy_name, symbol, timeframe, mode):
+def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False):
     """Run strategy signal check using TopStep market data."""
     try:
         from adapter import TopStepExchangeAdapter
@@ -95,6 +95,21 @@ def run_signal_check(strategy_name, symbol, timeframe, mode):
 
         price = float(last["close"])
 
+        # Apply HTF trend filter if enabled
+        htf_info = {}
+        if htf_filter_enabled:
+            from htf_filter import htf_trend_filter, apply_htf_filter
+
+            def _fetch_htf(sym, tf, limit):
+                candles = adapter.get_ohlcv(sym, interval=tf, limit=limit)
+                return _make_dataframe(candles) if candles else None
+
+            htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
+            original_signal = signal
+            signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
+            if signal != original_signal:
+                print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+
         # Freshen price with live quote if available
         try:
             live = adapter.get_price(symbol)
@@ -117,6 +132,12 @@ def run_signal_check(strategy_name, symbol, timeframe, mode):
                     indicators[col] = round(float(val), 6)
                 except (ValueError, TypeError):
                     pass
+
+        # Merge HTF indicators
+        if htf_info:
+            for k, v in htf_info.items():
+                if isinstance(v, (int, float)):
+                    indicators[k] = v
 
         print(json.dumps({
             "strategy": strategy_name,
@@ -214,8 +235,9 @@ def main():
         parser.add_argument("symbol")
         parser.add_argument("timeframe")
         parser.add_argument("--mode", default="paper")
+        parser.add_argument("--htf-filter", action="store_true", default=False)
         args = parser.parse_args()
-        run_signal_check(args.strategy, args.symbol, args.timeframe, args.mode)
+        run_signal_check(args.strategy, args.symbol, args.timeframe, args.mode, args.htf_filter)
 
 
 if __name__ == "__main__":

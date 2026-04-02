@@ -75,6 +75,7 @@ type StrategyConfig struct {
 	Capital         float64             `json:"capital"`
 	MaxDrawdownPct  float64             `json:"max_drawdown_pct"`
 	IntervalSeconds int                 `json:"interval_seconds,omitempty"` // per-strategy override (0 = use global)
+	HTFFilter       bool                `json:"htf_filter,omitempty"`       // higher-timeframe trend filter
 	ThetaHarvest    *ThetaHarvestConfig `json:"theta_harvest,omitempty"`
 	FuturesConfig   *FuturesConfig      `json:"futures,omitempty"`
 }

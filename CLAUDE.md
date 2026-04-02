@@ -70,6 +70,10 @@
 - Spot and futures have independent `STRATEGY_REGISTRY` dicts — a new strategy must be added to both files with `@register_strategy` decorator; perps auto-discovers from spot via `discoverStrategies()`
 - New strategies also need: (1) `knownShortNames` entry in `init.go` for the `"name": "abbrev"` mapping, (2) `defaultSpotStrategies` / `defaultFuturesStrategies` fallback entries in `init.go`
 - Strategy discovery: `shared_strategies/spot/strategies.py --list-json`, `shared_strategies/options/strategies.py --list-json`, and `shared_strategies/futures/strategies.py --list-json` output JSON arrays of `{"id":..., "description":...}`
+- Adding a per-strategy config flag (cross-cutting): (1) add field to `StrategyConfig` in `config.go`, (2) in `main.go` `run*Check` functions append CLI flag to args when enabled, (3) parse flag in each Python check script, (4) add to `InitOptions` + wizard prompt + `generateConfig` in `init.go`
+- `check_strategy.py` uses manual `sys.argv` parsing (not argparse) — when adding flags, filter `--` prefixed args from positional args before indexing; other check scripts (hyperliquid, topstep, robinhood) use `argparse` so just add `parser.add_argument("--flag")`
+- `shared_tools/htf_filter.py` — `htf_trend_filter(symbol, timeframe, fetch_fn)` returns HTF trend via 50 EMA; `apply_htf_filter(signal, htf_trend)` filters counter-trend signals; `fetch_fn` is a callable `(symbol, tf, limit) → DataFrame` so it works across all platforms
+- `StrategyConfig.HTFFilter` — per-strategy bool (`htf_filter` in JSON); Go appends `--htf-filter` to script args; not applied to options strategies
 
 ## Pull Requests
 - PR descriptions must reference the related GitHub issue if one exists, using `Closes #<number>` in the body (e.g. `Closes #46`)
@@ -101,3 +105,4 @@
 - Run with config: `./go-trader --config scheduler/config.json`
 - Smoke test interactive CLI: `printf "answer1\nanswer2\n" | ./go-trader init`
 - Smoke test JSON CLI: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output /tmp/test.json`
+- Smoke test HTF filter: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10,"htfFilter":true}' --output /tmp/test.json` — verify `htf_filter: true` in output

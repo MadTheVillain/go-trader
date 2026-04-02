@@ -210,6 +210,7 @@ type InitOptions struct {
 	RobinhoodCapital        float64
 	RobinhoodDrawdown       float64
 	RobinhoodOptionsSymbols []string // stock tickers for Robinhood options (e.g. ["SPY", "QQQ"])
+	HTFFilter               bool     // higher-timeframe trend filter for all strategies
 	DiscordEnabled          bool
 	DiscordOwnerID          string            // Discord user ID for DM features (upgrade prompts, config migration)
 	SpotChannelID           string            // deprecated: use ChannelMap
@@ -450,6 +451,15 @@ func generateConfig(opts InitOptions) *Config {
 	if usesLuno {
 		cfg.Platforms["luno"] = &PlatformConfig{
 			StateFile: "platforms/luno/state.json",
+		}
+	}
+
+	// Apply HTF filter to all non-options strategies if enabled.
+	if opts.HTFFilter {
+		for i := range cfg.Strategies {
+			if cfg.Strategies[i].Type != "options" {
+				cfg.Strategies[i].HTFFilter = true
+			}
 		}
 	}
 
@@ -918,6 +928,10 @@ func runInit(args []string) int {
 	autoUpdateModes := []string{"off", "daily", "heartbeat"}
 	autoUpdate := autoUpdateModes[autoUpdateIdx]
 
+	// HTF trend filter.
+	fmt.Println("\n--- HTF Trend Filter ---")
+	htfFilter := p.YesNo("Enable higher-timeframe trend filter? (filters counter-trend signals)", true)
+
 	// Collect all perps strategy IDs (auto-selected, no user prompt).
 	perpsStratIDs := make([]string, len(perpsStrategies))
 	for i, s := range perpsStrategies {
@@ -983,6 +997,7 @@ func runInit(args []string) int {
 		FuturesCapital:          futuresCapital,
 		FuturesDrawdown:         futuresDrawdown,
 		FuturesFeePerContract:   futuresFeePerContract,
+		HTFFilter:               htfFilter,
 		DiscordEnabled:          discordEnabled,
 		DiscordOwnerID:          discordOwnerID,
 		ChannelMap:              channelMap,
