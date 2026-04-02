@@ -429,6 +429,35 @@ def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: 
     return result
 
 
+@register_strategy(
+    "delta_neutral_funding",
+    "Delta-Neutral Funding — enter when 7d avg funding rate exceeds threshold, exit when below",
+    {"entry_threshold": 0.0001, "exit_threshold": 0.00005, "drift_threshold": 2.0,
+     "current_funding_rate": 0.0, "avg_funding_rate_7d": 0.0}
+)
+def delta_neutral_funding_strategy(df: pd.DataFrame,
+                                   entry_threshold: float = 0.0001,
+                                   exit_threshold: float = 0.00005,
+                                   drift_threshold: float = 2.0,
+                                   current_funding_rate: float = 0.0,
+                                   avg_funding_rate_7d: float = 0.0) -> pd.DataFrame:
+    result = df.copy()
+    avg = avg_funding_rate_7d
+    result["funding_rate"] = current_funding_rate
+    result["avg_funding_7d"] = avg
+    result["funding_apy"] = avg * 3 * 365 * 100
+    result["delta_drift_pct"] = 0.0
+    result["rebalance_needed"] = 0.0
+    result["signal"] = 0
+    if avg == 0.0:
+        return result
+    if avg > entry_threshold:
+        result.iloc[-1, result.columns.get_loc("signal")] = 1
+    elif avg < exit_threshold:
+        result.iloc[-1, result.columns.get_loc("signal")] = -1
+    return result
+
+
 if __name__ == "__main__":
     if "--list-json" in sys.argv:
         print(json.dumps([{"id": name, "description": STRATEGY_REGISTRY[name]["description"]} for name in list_strategies()]))

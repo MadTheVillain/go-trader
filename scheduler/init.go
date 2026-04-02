@@ -28,25 +28,26 @@ type stratDef struct {
 
 // knownShortNames maps strategy IDs to abbreviated config ID prefixes.
 var knownShortNames = map[string]string{
-	"sma_crossover":      "sma",
-	"ema_crossover":      "ema",
-	"momentum":           "momentum",
-	"rsi":                "rsi",
-	"bollinger_bands":    "bb",
-	"macd":               "macd",
-	"mean_reversion":     "mr",
-	"volume_weighted":    "vw",
-	"triple_ema":         "tema",
-	"rsi_macd_combo":     "rmc",
-	"vol_mean_reversion": "vol",
-	"momentum_options":   "mom",
-	"protective_puts":    "pput",
-	"covered_calls":      "ccall",
-	"breakout":           "bo",
-	"atr_breakout":       "atrbo",
-	"stoch_rsi":          "stochrsi",
-	"ichimoku_cloud":     "ichi",
-	"vwap_reversion":     "vwap",
+	"sma_crossover":         "sma",
+	"ema_crossover":         "ema",
+	"momentum":              "momentum",
+	"rsi":                   "rsi",
+	"bollinger_bands":       "bb",
+	"macd":                  "macd",
+	"mean_reversion":        "mr",
+	"volume_weighted":       "vw",
+	"triple_ema":            "tema",
+	"rsi_macd_combo":        "rmc",
+	"vol_mean_reversion":    "vol",
+	"momentum_options":      "mom",
+	"protective_puts":       "pput",
+	"covered_calls":         "ccall",
+	"breakout":              "bo",
+	"atr_breakout":          "atrbo",
+	"stoch_rsi":             "stochrsi",
+	"ichimoku_cloud":        "ichi",
+	"vwap_reversion":        "vwap",
+	"delta_neutral_funding": "dnf",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.
@@ -80,6 +81,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "vwap_reversion", ShortName: "vwap"},
+	{ID: "delta_neutral_funding", ShortName: "dnf"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -102,6 +104,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "vwap_reversion", ShortName: "vwap"},
+	{ID: "delta_neutral_funding", ShortName: "dnf"},
 }
 
 // Supported CME futures symbols for the init wizard.
