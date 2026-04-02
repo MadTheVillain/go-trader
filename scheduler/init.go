@@ -46,6 +46,7 @@ var knownShortNames = map[string]string{
 	"atr_breakout":       "atrbo",
 	"stoch_rsi":          "stochrsi",
 	"ichimoku_cloud":     "ichi",
+	"order_blocks":       "ob",
 	"vwap_reversion":     "vwap",
 }
 
@@ -79,6 +80,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "rsi_macd_combo", ShortName: "rmc"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
+	{ID: "order_blocks", ShortName: "ob"},
 	{ID: "vwap_reversion", ShortName: "vwap"},
 }
 
@@ -101,6 +103,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "breakout", ShortName: "bo"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
+	{ID: "order_blocks", ShortName: "ob"},
 	{ID: "vwap_reversion", ShortName: "vwap"},
 }
 

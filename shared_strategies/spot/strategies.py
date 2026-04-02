@@ -514,6 +514,90 @@ def heikin_ashi_ema_strategy(df: pd.DataFrame, ema_period: int = 21, confirmatio
 
 
 @register_strategy(
+    "order_blocks",
+    "Order Blocks (ICT/SMC) — institutional supply/demand zones from displacement candles",
+    {"atr_period": 14, "displacement_mult": 1.5, "ob_lookback": 20, "max_ob_age": 50}
+)
+def order_blocks_strategy(df: pd.DataFrame,
+                          atr_period: int = 14, displacement_mult: float = 1.5,
+                          ob_lookback: int = 20, max_ob_age: int = 50) -> pd.DataFrame:
+    result = df.copy()
+    close = result["close"].values
+    high = result["high"].values
+    low = result["low"].values
+    opn = result["open"].values
+    n = len(result)
+
+    # ATR for displacement threshold
+    tr = pd.concat([
+        result["high"] - result["low"],
+        (result["high"] - result["close"].shift(1)).abs(),
+        (result["low"] - result["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window=atr_period).mean().values
+
+    signal = np.zeros(n, dtype=int)
+
+    # Track active order blocks: list of (type, ob_high, ob_low, birth_idx, touched)
+    # type: "bull" or "bear"
+    active_obs = []
+
+    for i in range(1, n):
+        if np.isnan(atr[i]):
+            continue
+
+        body = abs(close[i] - opn[i])
+        threshold = displacement_mult * atr[i]
+
+        # Detect displacement candle and find last opposing candle
+        if body > threshold:
+            bullish_displacement = close[i] > opn[i]
+
+            # Search backward for last opposing candle within lookback
+            for j in range(i - 1, max(i - ob_lookback - 1, 0) - 1, -1):
+                if bullish_displacement and close[j] < opn[j]:
+                    # Bearish candle before bullish impulse = bullish OB
+                    active_obs.append(("bull", high[j], low[j], i, False))
+                    break
+                elif not bullish_displacement and close[j] > opn[j]:
+                    # Bullish candle before bearish impulse = bearish OB
+                    active_obs.append(("bear", high[j], low[j], i, False))
+                    break
+
+        # Check active OBs for touches and invalidation
+        new_obs = []
+        for ob_type, ob_high, ob_low, birth, touched in active_obs:
+            age = i - birth
+            if age > max_ob_age:
+                continue  # expired
+
+            if ob_type == "bull":
+                # Invalidated if price closes below OB low
+                if close[i] < ob_low:
+                    continue
+                # Touch: price dips into OB zone
+                if low[i] <= ob_high and not touched:
+                    signal[i] = 1
+                    new_obs.append((ob_type, ob_high, ob_low, birth, True))
+                    continue
+            else:  # bear
+                # Invalidated if price closes above OB high
+                if close[i] > ob_high:
+                    continue
+                # Touch: price rises into OB zone
+                if high[i] >= ob_low and not touched:
+                    signal[i] = -1
+                    new_obs.append((ob_type, ob_high, ob_low, birth, True))
+                    continue
+
+            new_obs.append((ob_type, ob_high, ob_low, birth, touched))
+        active_obs = new_obs
+
+    result["signal"] = signal
+    return result
+
+
+@register_strategy(
     "vwap_reversion",
     "VWAP Reversion — buy when price drops below VWAP by N std devs, sell when above",
     {"entry_std": 1.5, "exit_std": 0.2}
