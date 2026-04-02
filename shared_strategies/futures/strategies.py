@@ -19,6 +19,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from indicators import sma, ema
 from amd_ifvg import amd_ifvg_core
+from chart_patterns import chart_pattern_core
+from liquidity_sweeps import liquidity_sweep_core
 
 # ─────────────────────────────────────────────
 # Strategy registry
@@ -393,6 +395,83 @@ def heikin_ashi_ema_strategy(df: pd.DataFrame, ema_period: int = 21, confirmatio
 
 
 @register_strategy(
+    "order_blocks",
+    "Order Blocks (ICT/SMC) — institutional supply/demand zones from displacement candles",
+    {"atr_period": 14, "displacement_mult": 1.5, "ob_lookback": 20, "max_ob_age": 50}
+)
+def order_blocks_strategy(df: pd.DataFrame,
+                          atr_period: int = 14, displacement_mult: float = 1.5,
+                          ob_lookback: int = 20, max_ob_age: int = 50) -> pd.DataFrame:
+    result = df.copy()
+    close = result["close"].values
+    high = result["high"].values
+    low = result["low"].values
+    opn = result["open"].values
+    n = len(result)
+
+    # ATR for displacement threshold
+    tr = pd.concat([
+        result["high"] - result["low"],
+        (result["high"] - result["close"].shift(1)).abs(),
+        (result["low"] - result["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window=atr_period).mean().values
+
+    signal = np.zeros(n, dtype=int)
+
+    # Track active order blocks: list of (type, ob_high, ob_low, birth_idx, touched)
+    active_obs = []
+
+    for i in range(1, n):
+        if np.isnan(atr[i]):
+            continue
+
+        body = abs(close[i] - opn[i])
+        threshold = displacement_mult * atr[i]
+
+        # Detect displacement candle and find last opposing candle
+        if body > threshold:
+            bullish_displacement = close[i] > opn[i]
+
+            # Search backward for last opposing candle within lookback
+            for j in range(i - 1, max(i - ob_lookback - 1, 0) - 1, -1):
+                if bullish_displacement and close[j] < opn[j]:
+                    active_obs.append(("bull", high[j], low[j], i, False))
+                    break
+                elif not bullish_displacement and close[j] > opn[j]:
+                    active_obs.append(("bear", high[j], low[j], i, False))
+                    break
+
+        # Check active OBs for touches and invalidation
+        new_obs = []
+        for ob_type, ob_high, ob_low, birth, touched in active_obs:
+            age = i - birth
+            if age > max_ob_age:
+                continue
+
+            if ob_type == "bull":
+                if close[i] < ob_low:
+                    continue
+                if low[i] <= ob_high and not touched:
+                    signal[i] = 1
+                    new_obs.append((ob_type, ob_high, ob_low, birth, True))
+                    continue
+            else:
+                if close[i] > ob_high:
+                    continue
+                if high[i] >= ob_low and not touched:
+                    signal[i] = -1
+                    new_obs.append((ob_type, ob_high, ob_low, birth, True))
+                    continue
+
+            new_obs.append((ob_type, ob_high, ob_low, birth, touched))
+        active_obs = new_obs
+
+    result["signal"] = signal
+    return result
+
+
+@register_strategy(
     "vwap_reversion",
     "VWAP Reversion — buy when price drops below VWAP by N std devs, sell when above",
     {"entry_std": 1.5, "exit_std": 0.2}
@@ -426,6 +505,103 @@ def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: 
     result.loc[sell_cross, "signal"] = -1
     # Clean up temp columns
     result.drop(columns=["_day", "_tp_vol", "_cum_tp_vol", "_cum_vol"], inplace=True)
+    return result
+
+
+@register_strategy(
+    "chart_pattern",
+    "Chart Pattern — detects Double Top/Bottom, H&S, Flags, Triangles with volume confirmation",
+    {"pivot_lookback": 5, "tolerance": 0.03, "vol_multiplier": 1.5, "vol_period": 20}
+)
+def chart_pattern_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return chart_pattern_core(df, **params)
+
+
+@register_strategy(
+    "liquidity_sweeps",
+    "Liquidity Sweeps (ICT) — fades stop-hunt wicks beyond swing highs/lows after price closes back inside range",
+    {"swing_lookback": 20, "confirmation": 1}
+)
+def liquidity_sweeps_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return liquidity_sweep_core(df, **params)
+
+
+@register_strategy(
+    "parabolic_sar",
+    "Parabolic SAR — trend-following stop and reverse with accelerating trailing stop",
+    {"iaf": 0.02, "af_step": 0.02, "max_af": 0.2}
+)
+def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float = 0.02, max_af: float = 0.2) -> pd.DataFrame:
+    result = df.copy()
+    high = result["high"].values
+    low = result["low"].values
+    close = result["close"].values
+    n = len(close)
+    sar = np.zeros(n)
+    trend = np.zeros(n, dtype=int)  # 1 = uptrend, -1 = downtrend
+    af = np.zeros(n)
+    ep = np.zeros(n)  # extreme point
+
+    if n < 2:
+        result["sar"] = np.nan
+        result["signal"] = 0
+        return result
+
+    trend[0] = 1 if close[1] >= close[0] else -1
+    if trend[0] == 1:
+        sar[0] = low[0]
+        ep[0] = high[0]
+    else:
+        sar[0] = high[0]
+        ep[0] = low[0]
+    af[0] = iaf
+
+    for i in range(1, n):
+        prev_sar = sar[i - 1]
+        prev_af = af[i - 1]
+        prev_ep = ep[i - 1]
+        prev_trend = trend[i - 1]
+
+        new_sar = prev_sar + prev_af * (prev_ep - prev_sar)
+
+        if prev_trend == 1:
+            new_sar = min(new_sar, low[i - 1])
+            if i >= 2:
+                new_sar = min(new_sar, low[i - 2])
+        else:
+            new_sar = max(new_sar, high[i - 1])
+            if i >= 2:
+                new_sar = max(new_sar, high[i - 2])
+
+        if prev_trend == 1 and low[i] < new_sar:
+            trend[i] = -1
+            sar[i] = prev_ep
+            ep[i] = low[i]
+            af[i] = iaf
+        elif prev_trend == -1 and high[i] > new_sar:
+            trend[i] = 1
+            sar[i] = prev_ep
+            ep[i] = high[i]
+            af[i] = iaf
+        else:
+            trend[i] = prev_trend
+            sar[i] = new_sar
+            if prev_trend == 1:
+                ep[i] = max(prev_ep, high[i])
+            else:
+                ep[i] = min(prev_ep, low[i])
+            if ep[i] != prev_ep:
+                af[i] = min(prev_af + af_step, max_af)
+            else:
+                af[i] = prev_af
+
+    result["sar"] = sar
+    result["signal"] = 0
+    trend_series = pd.Series(trend, index=result.index)
+    buy = (trend_series == 1) & (trend_series.shift(1) == -1)
+    sell = (trend_series == -1) & (trend_series.shift(1) == 1)
+    result.loc[buy, "signal"] = 1
+    result.loc[sell, "signal"] = -1
     return result
 
 

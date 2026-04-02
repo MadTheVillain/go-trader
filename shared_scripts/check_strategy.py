@@ -23,16 +23,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 
 def main():
-    if len(sys.argv) < 4:
+    # Parse optional flags from argv before positional args
+    htf_filter_enabled = "--htf-filter" in sys.argv
+    positional_args = [a for a in sys.argv[1:] if not a.startswith("--")]
+
+    if len(positional_args) < 3:
         print(json.dumps({
-            "error": f"Usage: {sys.argv[0]} <strategy> <symbol> <timeframe> [symbol_b]"
+            "error": f"Usage: {sys.argv[0]} <strategy> <symbol> <timeframe> [symbol_b] [--htf-filter]"
         }))
         sys.exit(1)
 
-    strategy_name = sys.argv[1]
-    symbol = sys.argv[2]
-    timeframe = sys.argv[3]
-    symbol_b = sys.argv[4] if len(sys.argv) >= 5 else None
+    strategy_name = positional_args[0]
+    symbol = positional_args[1]
+    timeframe = positional_args[2]
+    symbol_b = positional_args[3] if len(positional_args) >= 4 else None
 
     try:
         from strategies import apply_strategy, get_strategy
@@ -103,6 +107,20 @@ def main():
 
         price = float(last["close"])
 
+        # Apply HTF trend filter if enabled
+        htf_info = {}
+        if htf_filter_enabled:
+            from htf_filter import htf_trend_filter, apply_htf_filter
+
+            def _fetch_htf(sym, tf, limit):
+                return fetch_ohlcv(symbol=sym, timeframe=tf, limit=limit, store=False)
+
+            htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
+            original_signal = signal
+            signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
+            if signal != original_signal:
+                print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+
         # Collect relevant indicators
         indicators = {}
         indicator_cols = [c for c in result_df.columns
@@ -115,6 +133,12 @@ def main():
                     indicators[col] = round(float(val), 6)
                 except (ValueError, TypeError):
                     pass
+
+        # Merge HTF indicators
+        if htf_info:
+            for k, v in htf_info.items():
+                if isinstance(v, (int, float)):
+                    indicators[k] = v
 
         output = {
             "strategy": strategy_name,

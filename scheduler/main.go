@@ -671,9 +671,13 @@ func main() {
 // runSpotCheck runs the spot check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
 func runSpotCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
-	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+	args := sc.Args
+	if sc.HTFFilter {
+		args = append(append([]string{}, args...), "--htf-filter")
+	}
+	logger.Info("Running: python3 %s %v", sc.Script, args)
 
-	result, stderr, err := RunSpotCheck(sc.Script, sc.Args)
+	result, stderr, err := RunSpotCheck(sc.Script, args)
 	if err != nil {
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
@@ -807,9 +811,13 @@ func hyperliquidSymbol(args []string) string {
 
 // runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
 func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
-	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+	args := sc.Args
+	if sc.HTFFilter {
+		args = append(append([]string{}, args...), "--htf-filter")
+	}
+	logger.Info("Running: python3 %s %v", sc.Script, args)
 
-	result, stderr, err := RunHyperliquidCheck(sc.Script, sc.Args)
+	result, stderr, err := RunHyperliquidCheck(sc.Script, args)
 	if err != nil {
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
@@ -933,9 +941,13 @@ func topstepSymbol(args []string) string {
 
 // runTopStepCheck runs check_topstep.py signal-check mode (Phase 3, no lock).
 func runTopStepCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
-	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+	args := sc.Args
+	if sc.HTFFilter {
+		args = append(append([]string{}, args...), "--htf-filter")
+	}
+	logger.Info("Running: python3 %s %v", sc.Script, args)
 
-	result, stderr, err := RunTopStepCheck(sc.Script, sc.Args)
+	result, stderr, err := RunTopStepCheck(sc.Script, args)
 	if err != nil {
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
@@ -1080,9 +1092,13 @@ func robinhoodSymbol(args []string) string {
 
 // runRobinhoodCheck runs check_robinhood.py signal-check mode (Phase 3, no lock).
 func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
-	logger.Info("Running: python3 %s %v", sc.Script, sc.Args)
+	args := sc.Args
+	if sc.HTFFilter {
+		args = append(append([]string{}, args...), "--htf-filter")
+	}
+	logger.Info("Running: python3 %s %v", sc.Script, args)
 
-	result, stderr, err := RunRobinhoodCheck(sc.Script, sc.Args)
+	result, stderr, err := RunRobinhoodCheck(sc.Script, args)
 	if err != nil {
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
