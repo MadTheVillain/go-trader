@@ -329,6 +329,40 @@ def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: floa
 
 
 @register_strategy(
+    "ichimoku_cloud",
+    "Ichimoku Cloud — trend confirmation via Tenkan/Kijun cross, cloud position, and Chikou span",
+    {"tenkan_period": 9, "kijun_period": 26, "senkou_b_period": 52}
+)
+def ichimoku_cloud_strategy(df: pd.DataFrame, tenkan_period: int = 9, kijun_period: int = 26, senkou_b_period: int = 52) -> pd.DataFrame:
+    result = df.copy()
+    high, low, close = result["high"], result["low"], result["close"]
+
+    tenkan = (high.rolling(window=tenkan_period).max() + low.rolling(window=tenkan_period).min()) / 2
+    kijun = (high.rolling(window=kijun_period).max() + low.rolling(window=kijun_period).min()) / 2
+    senkou_a = (tenkan + kijun) / 2
+    senkou_b = (high.rolling(window=senkou_b_period).max() + low.rolling(window=senkou_b_period).min()) / 2
+
+    result["tenkan"] = tenkan
+    result["kijun"] = kijun
+    result["senkou_a"] = senkou_a
+    result["senkou_b"] = senkou_b
+
+    cloud_top = np.maximum(senkou_a, senkou_b)
+    cloud_bottom = np.minimum(senkou_a, senkou_b)
+    above_cloud = close > cloud_top
+    below_cloud = close < cloud_bottom
+    tk_cross_up = (tenkan > kijun) & (tenkan.shift(1) <= kijun.shift(1))
+    tk_cross_down = (tenkan < kijun) & (tenkan.shift(1) >= kijun.shift(1))
+    chikou_bull = close > close.shift(kijun_period)
+    chikou_bear = close < close.shift(kijun_period)
+
+    result["signal"] = 0
+    result.loc[above_cloud & tk_cross_up & chikou_bull, "signal"] = 1
+    result.loc[below_cloud & tk_cross_down & chikou_bear, "signal"] = -1
+    return result
+
+
+@register_strategy(
     "pairs_spread",
     "Pairs/Spread Trading — trade z-score of price ratio between two assets (needs 'close_b' column)",
     {"lookback": 30, "entry_z": 2.0, "exit_z": 0.5}
@@ -408,6 +442,28 @@ def squeeze_momentum_strategy(df: pd.DataFrame,
 
 
 @register_strategy(
+    "atr_breakout",
+    "ATR Breakout — enter on volatility breakout beyond ATR band",
+    {"atr_period": 14, "multiplier": 1.5}
+)
+def atr_breakout_strategy(df: pd.DataFrame, atr_period: int = 14, multiplier: float = 1.5) -> pd.DataFrame:
+    result = df.copy()
+    tr = pd.concat([
+        result["high"] - result["low"],
+        (result["high"] - result["close"].shift(1)).abs(),
+        (result["low"] - result["close"].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    result["atr"] = tr.rolling(window=atr_period).mean()
+    prev_close = result["close"].shift(1)
+    upper = prev_close + (multiplier * result["atr"])
+    lower = prev_close - (multiplier * result["atr"])
+    result["signal"] = 0
+    result.loc[(result["close"] > upper) & (result["close"].shift(1) <= upper.shift(1)), "signal"] = 1
+    result.loc[(result["close"] < lower) & (result["close"].shift(1) >= lower.shift(1)), "signal"] = -1
+    return result
+
+
+@register_strategy(
     "amd_ifvg",
     "AMD+IFVG — ICT Accumulation-Manipulation-Distribution with Implied Fair Value Gap (15m, session-aware)",
     {
@@ -418,6 +474,43 @@ def squeeze_momentum_strategy(df: pd.DataFrame,
 )
 def amd_ifvg_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return amd_ifvg_core(df, **params)
+
+
+@register_strategy(
+    "heikin_ashi_ema",
+    "Heikin Ashi + EMA — smoothed candles with EMA trend filter; 2 consecutive HA candles + price side of EMA",
+    {"ema_period": 21, "confirmation": 2}
+)
+def heikin_ashi_ema_strategy(df: pd.DataFrame, ema_period: int = 21, confirmation: int = 2) -> pd.DataFrame:
+    result = df.copy()
+    # Compute Heikin Ashi candles
+    ha_close = (result["open"] + result["high"] + result["low"] + result["close"]) / 4
+    ha_open = ha_close.copy()
+    for i in range(1, len(result)):
+        ha_open.iloc[i] = (ha_open.iloc[i - 1] + ha_close.iloc[i - 1]) / 2
+    ha_high = pd.concat([result["high"], ha_open, ha_close], axis=1).max(axis=1)
+    ha_low = pd.concat([result["low"], ha_open, ha_close], axis=1).min(axis=1)
+    result["ha_open"] = ha_open
+    result["ha_close"] = ha_close
+    result["ha_high"] = ha_high
+    result["ha_low"] = ha_low
+    result["ha_ema"] = ema(ha_close, ema_period)
+    # Bullish HA: green candle (ha_close > ha_open) with no lower wick (ha_low == ha_open)
+    result["ha_bullish"] = (ha_close > ha_open) & (ha_low == ha_open)
+    # Bearish HA: red candle (ha_close < ha_open) with no upper wick (ha_high == ha_open)
+    result["ha_bearish"] = (ha_close < ha_open) & (ha_high == ha_open)
+    # Require `confirmation` consecutive bullish/bearish candles
+    bull_streak = result["ha_bullish"].rolling(window=confirmation).sum() == confirmation
+    bear_streak = result["ha_bearish"].rolling(window=confirmation).sum() == confirmation
+    above_ema = ha_close > result["ha_ema"]
+    below_ema = ha_close < result["ha_ema"]
+    result["signal"] = 0
+    # BUY: confirmation consecutive bullish HA candles + price above EMA
+    buy_cond = bull_streak & above_ema
+    sell_cond = bear_streak & below_ema
+    result.loc[buy_cond & ~buy_cond.shift(1, fill_value=False), "signal"] = 1
+    result.loc[sell_cond & ~sell_cond.shift(1, fill_value=False), "signal"] = -1
+    return result
 
 
 if __name__ == "__main__":
