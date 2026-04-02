@@ -122,6 +122,42 @@ class HyperliquidExchangeAdapter:
             ])
         return result
 
+    def get_funding_rate(self, symbol: str) -> float:
+        """Get current predicted funding rate for a coin (e.g. 'BTC').
+
+        Returns the raw rate as a float (e.g. 0.0001 = 0.01% per 8h).
+        Returns 0.0 if the symbol is not found or on error.
+        """
+        try:
+            data = self._info.meta_and_asset_ctxs()
+            universe = data[0]["universe"]
+            asset_ctxs = data[1]
+            for i, asset in enumerate(universe):
+                if asset["name"] == symbol:
+                    return float(asset_ctxs[i].get("funding", 0))
+            return 0.0
+        except Exception:
+            return 0.0
+
+    def get_funding_history(self, symbol: str, days: int = 7) -> list:
+        """Get historical funding rate snapshots for a coin.
+
+        Args:
+            symbol: Coin name (e.g. 'BTC').
+            days: Number of days of history to fetch (default 7).
+
+        Returns list of {"rate": float, "time": int} dicts, newest last.
+        """
+        try:
+            start_time = int(time.time() * 1000) - days * 86400 * 1000
+            records = self._info.funding_history(symbol, start_time)
+            return [
+                {"rate": float(r["fundingRate"]), "time": int(r["time"])}
+                for r in records
+            ]
+        except Exception:
+            return []
+
     # ─────────────────────────────────────────────
     # Account data (requires HYPERLIQUID_ACCOUNT_ADDRESS)
     # ─────────────────────────────────────────────

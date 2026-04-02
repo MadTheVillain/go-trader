@@ -44,6 +44,21 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         adapter = HyperliquidExchangeAdapter()
 
+        # Fetch funding rate data for delta-neutral strategy
+        strategy_params = {}
+        if strategy_name == "delta_neutral_funding":
+            try:
+                current_rate = adapter.get_funding_rate(symbol)
+                history = adapter.get_funding_history(symbol, days=7)
+                avg_rate = (sum(r["rate"] for r in history) / len(history)) if history else 0.0
+                strategy_params = {
+                    "current_funding_rate": current_rate,
+                    "avg_funding_rate_7d": avg_rate,
+                }
+                print(f"Funding rate {symbol}: current={current_rate:.6f} avg7d={avg_rate:.6f}", file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: failed to fetch funding rate: {e}", file=sys.stderr)
+
         print(f"Fetching {symbol} {timeframe} from Hyperliquid ({mode})...", file=sys.stderr)
         candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=200)
 
@@ -63,7 +78,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        result_df = apply_strategy(strategy_name, df)
+        result_df = apply_strategy(strategy_name, df, strategy_params or None)
 
         last = result_df.iloc[-1]
         signal = int(last.get("signal", 0))

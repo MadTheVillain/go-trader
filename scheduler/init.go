@@ -28,29 +28,30 @@ type stratDef struct {
 
 // knownShortNames maps strategy IDs to abbreviated config ID prefixes.
 var knownShortNames = map[string]string{
-	"sma_crossover":      "sma",
-	"ema_crossover":      "ema",
-	"momentum":           "momentum",
-	"rsi":                "rsi",
-	"bollinger_bands":    "bb",
-	"macd":               "macd",
-	"mean_reversion":     "mr",
-	"volume_weighted":    "vw",
-	"triple_ema":         "tema",
-	"rsi_macd_combo":     "rmc",
-	"vol_mean_reversion": "vol",
-	"momentum_options":   "mom",
-	"protective_puts":    "pput",
-	"covered_calls":      "ccall",
-	"breakout":           "bo",
-	"atr_breakout":       "atrbo",
-	"stoch_rsi":          "stochrsi",
-	"ichimoku_cloud":     "ichi",
-	"order_blocks":       "ob",
-	"vwap_reversion":     "vwap",
-	"chart_pattern":      "cpat",
-	"liquidity_sweeps":   "liqsw",
-	"parabolic_sar":      "psar",
+	"sma_crossover":         "sma",
+	"ema_crossover":         "ema",
+	"momentum":              "momentum",
+	"rsi":                   "rsi",
+	"bollinger_bands":       "bb",
+	"macd":                  "macd",
+	"mean_reversion":        "mr",
+	"volume_weighted":       "vw",
+	"triple_ema":            "tema",
+	"rsi_macd_combo":        "rmc",
+	"vol_mean_reversion":    "vol",
+	"momentum_options":      "mom",
+	"protective_puts":       "pput",
+	"covered_calls":         "ccall",
+	"breakout":              "bo",
+	"atr_breakout":          "atrbo",
+	"stoch_rsi":             "stochrsi",
+	"ichimoku_cloud":        "ichi",
+	"order_blocks":          "ob",
+	"vwap_reversion":        "vwap",
+	"chart_pattern":         "cpat",
+	"liquidity_sweeps":      "liqsw",
+	"parabolic_sar":         "psar",
+	"delta_neutral_funding": "dnf",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.
@@ -88,6 +89,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
+	{ID: "delta_neutral_funding", ShortName: "dnf"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -116,6 +118,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
+	{ID: "delta_neutral_funding", ShortName: "dnf"},
 }
 
 // Supported CME futures symbols for the init wizard.
