@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -234,19 +233,21 @@ type InitOptions struct {
 	OKXPerpsStrategies      []string // selected perps strategy IDs for OKX
 	OKXCapital              float64
 	OKXDrawdown             float64
-	HTFFilter               bool // higher-timeframe trend filter for all strategies
+	CapitalPct              float64 `json:"capitalPct,omitempty"` // 0-1; global capital_pct applied to all strategies
+	HTFFilter               bool    // higher-timeframe trend filter for all strategies
 	DiscordEnabled          bool
 	DiscordOwnerID          string            // Discord user ID for DM features (upgrade prompts, config migration)
 	SpotChannelID           string            // deprecated: use ChannelMap
 	OptionsChannelID        string            // deprecated: use ChannelMap
 	ChannelMap              map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
+	TelegramEnabled         bool
+	TelegramOwnerChatID     string            // Telegram chat ID for owner DMs
+	TelegramChannelMap      map[string]string // keyed by platform/type ("spot", "hyperliquid", etc.)
 	AutoUpdate              string            // "off", "daily", "heartbeat" (default: "off")
 	DMPaperTrades           bool              // DM owner on paper trade execution
 	DMLiveTrades            bool              // DM owner on live trade execution
-	TelegramEnabled         bool
-	TelegramChatID          int64
-	TelegramDMPaper         bool
-	TelegramDMLive          bool
+	TelegramDMPaper         bool              // Telegram: send on paper trade
+	TelegramDMLive          bool              // Telegram: send on live trade
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -269,9 +270,10 @@ func generateConfig(opts InitOptions) *Config {
 		},
 		Telegram: TelegramConfig{
 			Enabled:       opts.TelegramEnabled,
-			ChatID:        opts.TelegramChatID,
+			OwnerChatID:   opts.TelegramOwnerChatID,
 			DMPaperTrades: opts.TelegramDMPaper,
 			DMLiveTrades:  opts.TelegramDMLive,
+			Channels:      opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
 		Platforms:  make(map[string]*PlatformConfig),
@@ -547,6 +549,13 @@ func generateConfig(opts InitOptions) *Config {
 			if cfg.Strategies[i].Type != "options" {
 				cfg.Strategies[i].HTFFilter = true
 			}
+		}
+	}
+
+	// #87: Apply capital_pct to all strategies if set globally.
+	if opts.CapitalPct > 0 {
+		for i := range cfg.Strategies {
+			cfg.Strategies[i].CapitalPct = opts.CapitalPct
 		}
 	}
 
@@ -1085,19 +1094,47 @@ func runInit(args []string) int {
 
 	// Step 9b: Telegram.
 	fmt.Println("\n--- Telegram Notifications ---")
-	telegramEnabled := p.YesNo("Enable Telegram trade alerts?", false)
-	var telegramChatID int64
+	telegramEnabled := p.YesNo("Enable Telegram notifications?", false)
+	telegramChannelMap := make(map[string]string)
+	telegramOwnerChatID := ""
 	telegramDMLive := false
 	telegramDMPaper := false
 	if telegramEnabled {
 		fmt.Println("Set TELEGRAM_BOT_TOKEN env var with your bot token (from @BotFather).")
-		chatIDStr := p.String("Telegram chat ID (send /start to your bot, then check getUpdates)", "")
-		if chatIDStr != "" {
-			if id, err := strconv.ParseInt(chatIDStr, 10, 64); err == nil {
-				telegramChatID = id
+		if enableSpot || includePairs {
+			if ch := p.String("Spot Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["spot"] = ch
 			}
 		}
-		if telegramChatID != 0 {
+		if enableOptions {
+			for _, plt := range optionPlatforms {
+				if ch := p.String(fmt.Sprintf("%s Telegram chat ID (leave blank to skip)", plt), ""); ch != "" {
+					telegramChannelMap[plt] = ch
+				}
+			}
+		}
+		if enablePerps {
+			if ch := p.String("Hyperliquid Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["hyperliquid"] = ch
+			}
+		}
+		if enableFutures {
+			if ch := p.String("TopStep Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["topstep"] = ch
+			}
+		}
+		if enableRobinhood {
+			if ch := p.String("Robinhood Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["robinhood"] = ch
+			}
+		}
+		if enableLuno {
+			if ch := p.String("Luno Telegram chat ID (leave blank to skip)", ""); ch != "" {
+				telegramChannelMap["luno"] = ch
+			}
+		}
+		telegramOwnerChatID = p.String("Your Telegram chat ID for DM upgrades (leave blank to skip)", "")
+		if telegramOwnerChatID != "" {
 			telegramDMLive = p.YesNo("Send Telegram alert on live trade executions?", true)
 			telegramDMPaper = p.YesNo("Send Telegram alert on paper trade executions?", false)
 		}
@@ -1207,11 +1244,12 @@ func runInit(args []string) int {
 		DiscordEnabled:          discordEnabled,
 		DiscordOwnerID:          discordOwnerID,
 		ChannelMap:              channelMap,
+		TelegramEnabled:         telegramEnabled,
+		TelegramOwnerChatID:     telegramOwnerChatID,
+		TelegramChannelMap:      telegramChannelMap,
 		AutoUpdate:              autoUpdate,
 		DMPaperTrades:           dmPaperTrades,
 		DMLiveTrades:            dmLiveTrades,
-		TelegramEnabled:         telegramEnabled,
-		TelegramChatID:          telegramChatID,
 		TelegramDMPaper:         telegramDMPaper,
 		TelegramDMLive:          telegramDMLive,
 	}

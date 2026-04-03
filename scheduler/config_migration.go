@@ -53,20 +53,6 @@ var configFieldRegistry = []ConfigField{
 	},
 	{
 		Version:     4,
-		JSONPath:    "telegram.enabled",
-		Description: "Enable Telegram trade alert notifications (true/false).",
-		Default:     "false",
-		FieldType:   "bool",
-	},
-	{
-		Version:     4,
-		JSONPath:    "telegram.chat_id",
-		Description: "Telegram chat ID for trade alerts. Send /start to your bot, then visit https://api.telegram.org/bot<TOKEN>/getUpdates to find your chat_id.",
-		Default:     "",
-		FieldType:   "int",
-	},
-	{
-		Version:     4,
 		JSONPath:    "telegram.dm_live_trades",
 		Description: "Send a Telegram message on every live trade execution (true/false).",
 		Default:     "true",
@@ -139,7 +125,7 @@ func setNestedField(obj map[string]interface{}, path string, value string) {
 
 // runConfigMigrationDM prompts the owner via DM for any new config fields introduced
 // since cfg.ConfigVersion. Falls back to applying defaults silently when DM is unavailable.
-func runConfigMigrationDM(cfg *Config, discord *DiscordNotifier, configPath string) {
+func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath string) {
 	fields := NewFieldsSince(cfg.ConfigVersion)
 
 	if len(fields) == 0 {
@@ -152,9 +138,9 @@ func runConfigMigrationDM(cfg *Config, discord *DiscordNotifier, configPath stri
 
 	values := make(map[string]string)
 
-	if discord == nil || cfg.Discord.OwnerID == "" {
+	if notifier == nil || !notifier.HasOwner() {
 		// No DM capability — apply defaults and bump version.
-		fmt.Printf("[migration] %d new config field(s) — applying defaults (no Discord DM configured)\n", len(fields))
+		fmt.Printf("[migration] %d new config field(s) — applying defaults (no DM configured)\n", len(fields))
 		for _, f := range fields {
 			if f.Default != "" {
 				values[f.JSONPath] = f.Default
@@ -167,10 +153,7 @@ func runConfigMigrationDM(cfg *Config, discord *DiscordNotifier, configPath stri
 	}
 
 	intro := fmt.Sprintf("**go-trader upgraded!** %d new config field(s) to set.", len(fields))
-	if err := discord.SendDM(cfg.Discord.OwnerID, intro); err != nil {
-		fmt.Printf("[migration] Failed to send intro DM: %v\n", err)
-		return
-	}
+	notifier.SendOwnerDM(intro)
 
 	for _, f := range fields {
 		defaultHint := "none"
@@ -178,7 +161,7 @@ func runConfigMigrationDM(cfg *Config, discord *DiscordNotifier, configPath stri
 			defaultHint = f.Default
 		}
 		prompt := fmt.Sprintf("**%s** — %s\nDefault: `%s`\nReply with a value, or `default` to use the default:", f.JSONPath, f.Description, defaultHint)
-		resp, err := discord.AskDM(cfg.Discord.OwnerID, prompt, 10*time.Minute)
+		resp, err := notifier.AskOwnerDM(prompt, 10*time.Minute)
 		if err != nil || strings.EqualFold(strings.TrimSpace(resp), "default") || resp == "" {
 			if f.Default != "" {
 				values[f.JSONPath] = f.Default
@@ -189,9 +172,9 @@ func runConfigMigrationDM(cfg *Config, discord *DiscordNotifier, configPath stri
 	}
 
 	if err := MigrateConfig(configPath, values); err != nil {
-		_ = discord.SendDM(cfg.Discord.OwnerID, fmt.Sprintf("**Migration failed**: %v", err))
+		notifier.SendOwnerDM(fmt.Sprintf("**Migration failed**: %v", err))
 		return
 	}
 
-	_ = discord.SendDM(cfg.Discord.OwnerID, "Config updated. Changes take effect next restart.")
+	notifier.SendOwnerDM("Config updated. Changes take effect next restart.")
 }

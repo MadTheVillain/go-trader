@@ -749,3 +749,117 @@ func TestRunInitFromJSON_FuturesEnabled(t *testing.T) {
 		t.Errorf("expected 2 futures strategies, got %d", futuresCount)
 	}
 }
+
+func TestGenerateConfig_CapitalPct(t *testing.T) {
+	opts := baseOpts()
+	opts.CapitalPct = 0.45
+
+	cfg := generateConfig(opts)
+
+	for _, s := range cfg.Strategies {
+		if s.CapitalPct != 0.45 {
+			t.Errorf("expected capital_pct=0.45 for %s, got %g", s.ID, s.CapitalPct)
+		}
+	}
+}
+
+func TestGenerateConfig_NoCapitalPct(t *testing.T) {
+	opts := baseOpts()
+	// CapitalPct defaults to 0 (not set)
+
+	cfg := generateConfig(opts)
+
+	for _, s := range cfg.Strategies {
+		if s.CapitalPct != 0 {
+			t.Errorf("expected capital_pct=0 for %s, got %g", s.ID, s.CapitalPct)
+		}
+	}
+}
+
+func TestValidateConfig_CapitalPctValid(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 600,
+		StateFile:       "state.json",
+		Strategies: []StrategyConfig{
+			{
+				ID:             "test-pct",
+				Type:           "spot",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_strategy.py",
+				Capital:        0,
+				CapitalPct:     0.45,
+				MaxDrawdownPct: 10,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Errorf("expected valid config with capital_pct, got error: %v", err)
+	}
+}
+
+func TestValidateConfig_CapitalPctInvalid(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 600,
+		StateFile:       "state.json",
+		Strategies: []StrategyConfig{
+			{
+				ID:             "test-bad-pct",
+				Type:           "spot",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_strategy.py",
+				Capital:        0,
+				CapitalPct:     1.5, // invalid: > 1
+				MaxDrawdownPct: 10,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(cfg); err == nil {
+		t.Error("expected validation error for capital_pct > 1")
+	}
+}
+
+func TestValidateConfig_CapitalPctNegative(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 600,
+		StateFile:       "state.json",
+		Strategies: []StrategyConfig{
+			{
+				ID:             "test-neg-pct",
+				Type:           "spot",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_strategy.py",
+				Capital:        0,
+				CapitalPct:     -0.5, // invalid: < 0
+				MaxDrawdownPct: 10,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(cfg); err == nil {
+		t.Error("expected validation error for negative capital_pct")
+	}
+}
+
+func TestValidateConfig_NoCapitalNoCapitalPct(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 600,
+		StateFile:       "state.json",
+		Strategies: []StrategyConfig{
+			{
+				ID:             "test-no-cap",
+				Type:           "spot",
+				Platform:       "hyperliquid",
+				Script:         "shared_scripts/check_strategy.py",
+				Capital:        0,
+				CapitalPct:     0,
+				MaxDrawdownPct: 10,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := ValidateConfig(cfg); err == nil {
+		t.Error("expected validation error when neither capital nor capital_pct is set")
+	}
+}

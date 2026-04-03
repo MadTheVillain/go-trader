@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -21,11 +20,12 @@ type DiscordConfig struct {
 
 // TelegramConfig holds Telegram notification settings.
 type TelegramConfig struct {
-	Enabled       bool   `json:"enabled"`
-	Token         string `json:"token"`
-	ChatID        int64  `json:"chat_id,omitempty"`         // Telegram chat ID for trade alerts
-	DMPaperTrades bool   `json:"dm_paper_trades,omitempty"` // send message on paper trade execution
-	DMLiveTrades  bool   `json:"dm_live_trades,omitempty"`  // send message on live trade execution
+	Enabled       bool              `json:"enabled"`
+	BotToken      string            `json:"bot_token"`
+	OwnerChatID   string            `json:"owner_chat_id,omitempty"`   // Owner's Telegram chat ID for DMs/upgrade prompts
+	DMPaperTrades bool              `json:"dm_paper_trades,omitempty"` // send message on paper trade execution
+	DMLiveTrades  bool              `json:"dm_live_trades,omitempty"`  // send message on live trade execution
+	Channels      map[string]string `json:"channels"`                  // keyed by platform or type ("spot", "hyperliquid", etc.)
 }
 
 // PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
@@ -86,6 +86,7 @@ type StrategyConfig struct {
 	Script          string              `json:"script"`
 	Args            []string            `json:"args"`
 	Capital         float64             `json:"capital"`
+	CapitalPct      float64             `json:"capital_pct,omitempty"` // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
 	MaxDrawdownPct  float64             `json:"max_drawdown_pct"`
 	IntervalSeconds int                 `json:"interval_seconds,omitempty"` // per-strategy override (0 = use global)
 	HTFFilter       bool                `json:"htf_filter,omitempty"`       // higher-timeframe trend filter
@@ -133,15 +134,13 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Discord.OwnerID = ownerID
 	}
 
-	// Telegram token from env var takes priority over config file.
-	if tgToken := os.Getenv("TELEGRAM_BOT_TOKEN"); tgToken != "" {
-		cfg.Telegram.Token = tgToken
+	// Telegram bot token from env var takes priority over config file.
+	if telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN"); telegramToken != "" {
+		cfg.Telegram.BotToken = telegramToken
 	}
-	// Telegram chat ID from env var takes priority over config file.
-	if chatIDStr := os.Getenv("TELEGRAM_CHAT_ID"); chatIDStr != "" {
-		if id, err := strconv.ParseInt(chatIDStr, 10, 64); err == nil {
-			cfg.Telegram.ChatID = id
-		}
+	// Telegram owner chat ID from env var takes priority over config file.
+	if telegramOwner := os.Getenv("TELEGRAM_OWNER_CHAT_ID"); telegramOwner != "" {
+		cfg.Telegram.OwnerChatID = telegramOwner
 	}
 
 	// Optional auth token for the /status HTTP endpoint.
@@ -337,9 +336,19 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// #36: Capital must be > 0.
-		if sc.Capital <= 0 {
-			errs = append(errs, fmt.Sprintf("%s: capital must be > 0, got %g", prefix, sc.Capital))
+		// #87: capital_pct validation.
+		if sc.CapitalPct != 0 {
+			if sc.CapitalPct < 0 || sc.CapitalPct > 1 {
+				errs = append(errs, fmt.Sprintf("%s: capital_pct must be in (0, 1], got %g", prefix, sc.CapitalPct))
+			}
+			if sc.Capital > 0 {
+				fmt.Printf("[WARN] %s: both capital ($%.0f) and capital_pct (%.0f%%) set — capital_pct takes priority\n", sc.ID, sc.Capital, sc.CapitalPct*100)
+			}
+		}
+
+		// #36: Capital must be > 0 (unless capital_pct is set).
+		if sc.Capital <= 0 && sc.CapitalPct == 0 {
+			errs = append(errs, fmt.Sprintf("%s: capital must be > 0 (or set capital_pct), got %g", prefix, sc.Capital))
 		}
 
 		// #36: MaxDrawdownPct must be in (0, 100].
