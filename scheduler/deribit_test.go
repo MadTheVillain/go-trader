@@ -47,7 +47,6 @@ func TestDeribitPricerName(t *testing.T) {
 	}
 }
 
-
 func TestCollectMarkRequests(t *testing.T) {
 	s := &StrategyState{
 		OptionPositions: map[string]*OptionPosition{
@@ -343,10 +342,9 @@ func TestDeribitFetchTickerMocked(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := &DeribitPricer{client: server.Client()}
+	d := &DeribitPricer{client: server.Client(), baseURL: server.URL}
 
-	// fetchTicker directly (need to construct URL manually for test)
-	mark, spot, err := d.fetchTicker(server.URL)
+	mark, spot, err := d.fetchTicker("BTC-PERPETUAL")
 	if err != nil {
 		t.Fatalf("fetchTicker failed: %v", err)
 	}
@@ -365,8 +363,8 @@ func TestDeribitFetchTickerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := &DeribitPricer{client: server.Client()}
-	_, _, err := d.fetchTicker(server.URL)
+	d := &DeribitPricer{client: server.Client(), baseURL: server.URL}
+	_, _, err := d.fetchTicker("BTC-PERPETUAL")
 	if err == nil {
 		t.Error("expected error for 404 response")
 	}
@@ -379,4 +377,3 @@ func TestDeribitGetOptionPriceFullInvalidInstrument(t *testing.T) {
 		t.Error("expected error for invalid expiry")
 	}
 }
-

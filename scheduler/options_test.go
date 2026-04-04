@@ -168,7 +168,7 @@ func TestExecuteOptionsSignalBuy(t *testing.T) {
 func TestExecuteOptionsSignalSell(t *testing.T) {
 	s := &StrategyState{
 		ID:              "test",
-		Cash:            10000,
+		Cash:            100000,
 		Platform:        "deribit",
 		Positions:       make(map[string]*Position),
 		OptionPositions: make(map[string]*OptionPosition),
@@ -203,7 +203,7 @@ func TestExecuteOptionsSignalSell(t *testing.T) {
 	if trades != 1 {
 		t.Errorf("trades = %d, want 1", trades)
 	}
-	if s.Cash <= 10000 {
+	if s.Cash <= 100000 {
 		t.Error("cash should increase after selling option (premium received)")
 	}
 }

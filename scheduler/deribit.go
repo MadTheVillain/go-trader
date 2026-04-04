@@ -30,13 +30,21 @@ type DeribitTickerResponse struct {
 
 // DeribitPricer fetches live option prices from Deribit
 type DeribitPricer struct {
-	client *http.Client
+	client  *http.Client
+	baseURL string // override for testing; defaults to deribitAPIBase
 }
 
 func NewDeribitPricer() *DeribitPricer {
 	return &DeribitPricer{
 		client: &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+func (d *DeribitPricer) apiBase() string {
+	if d.baseURL != "" {
+		return d.baseURL
+	}
+	return deribitAPIBase
 }
 
 // GetOptionPrice fetches live mark price for an option
@@ -69,7 +77,7 @@ func (d *DeribitPricer) GetOptionPrice(underlying, optionType string, strike flo
 
 // fetchTickerFull retrieves full ticker data including Greeks.
 func (d *DeribitPricer) fetchTickerFull(instrument string) (*DeribitTickerResponse, error) {
-	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", deribitAPIBase, instrument)
+	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", d.apiBase(), instrument)
 	resp, err := d.client.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("deribit API error: %w", err)
@@ -140,7 +148,7 @@ func (d *DeribitPricer) GetOptionPriceFull(underlying, optionType string, strike
 
 // fetchTicker retrieves ticker data for a specific instrument
 func (d *DeribitPricer) fetchTicker(instrument string) (float64, float64, error) {
-	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", deribitAPIBase, instrument)
+	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", d.apiBase(), instrument)
 	resp, err := d.client.Get(url)
 	if err != nil {
 		return 0, 0, fmt.Errorf("deribit API error: %w", err)
@@ -168,7 +176,7 @@ func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike 
 	}
 
 	// Fetch available instruments
-	url := fmt.Sprintf("%s/public/get_instruments?currency=%s&kind=option&expired=false", deribitAPIBase, underlying)
+	url := fmt.Sprintf("%s/public/get_instruments?currency=%s&kind=option&expired=false", d.apiBase(), underlying)
 	resp, err := d.client.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("instruments API error: %w", err)

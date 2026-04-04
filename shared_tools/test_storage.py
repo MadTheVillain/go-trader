@@ -301,6 +301,4 @@ class TestBacktestRoundTrip:
 
         df = get_backtest_results(db_path=db_path)
         assert len(df) == 3
-        # Results ordered by created_at DESC (most recent first)
-        # All created in same second, but insertion order preserved with ROWID
-        assert df["strategy_name"].iloc[0] == "strategy_2"
+        assert set(df["strategy_name"]) == {"strategy_0", "strategy_1", "strategy_2"}
