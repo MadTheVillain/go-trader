@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
-	"time"
 )
 
 func TestFormatInstrument(t *testing.T) {
@@ -49,32 +47,6 @@ func TestDeribitPricerName(t *testing.T) {
 	}
 }
 
-func TestDeribitFetchTickerFullMocked(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/public/ticker") {
-			w.WriteHeader(404)
-			return
-		}
-		resp := DeribitTickerResponse{}
-		resp.Result.InstrumentName = "BTC-PERPETUAL"
-		resp.Result.MarkPrice = 0.05
-		resp.Result.UnderlyingPrice = 60000
-		resp.Result.Greeks.Delta = 0.55
-		resp.Result.Greeks.Gamma = 0.001
-		resp.Result.Greeks.Theta = -10
-		resp.Result.Greeks.Vega = 100
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	// Create a pricer that hits our test server
-	d := &DeribitPricer{client: server.Client()}
-
-	ticker, err := d.fetchTickerFull(server.URL + "/public/ticker?instrument_name=BTC-PERPETUAL")
-	// Note: fetchTickerFull builds its own URL, so we test via fetchTicker instead
-	_ = ticker
-	_ = err
-}
 
 func TestCollectMarkRequests(t *testing.T) {
 	s := &StrategyState{
@@ -408,29 +380,3 @@ func TestDeribitGetOptionPriceFullInvalidInstrument(t *testing.T) {
 	}
 }
 
-func TestDeribitFindNearestExpiryMocked(t *testing.T) {
-	futureExpiry := time.Now().Add(30 * 24 * time.Hour)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/public/get_instruments") {
-			resp := map[string]interface{}{
-				"result": []map[string]interface{}{
-					{
-						"instrument_name":      "BTC-" + futureExpiry.Format("02JAN06") + "-60000-C",
-						"strike":               60000.0,
-						"expiration_timestamp":  futureExpiry.UnixMilli(),
-					},
-				},
-			}
-			json.NewEncoder(w).Encode(resp)
-			return
-		}
-		w.WriteHeader(404)
-	}))
-	defer server.Close()
-
-	d := &DeribitPricer{client: server.Client()}
-	// findNearestExpiry builds its own URL with deribitAPIBase, so we can't easily test via mock
-	// This tests the HTTP path
-	_ = d
-}

@@ -12,7 +12,7 @@ func TestNewFieldsSince(t *testing.T) {
 		version  int
 		minCount int // at least this many fields
 	}{
-		{0, 6},  // all fields
+		{0, 6},  // all fields; update counts when adding new config versions
 		{1, 6},  // v1 baseline, should get all v2+ fields
 		{2, 4},  // should get v3+ fields
 		{3, 4},  // should get v4 fields
@@ -61,7 +61,10 @@ func TestMigrateConfigBasic(t *testing.T) {
 		"interval_seconds": 300,
 		"strategies":       []interface{}{},
 	}
-	data, _ := json.MarshalIndent(original, "", "  ")
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(path, data, 0600)
 
 	values := map[string]string{
@@ -77,7 +80,9 @@ func TestMigrateConfigBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 	var updated map[string]interface{}
-	json.Unmarshal(result, &updated)
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
 
 	// Version should be bumped
 	version := int(updated["config_version"].(float64))
@@ -105,7 +110,10 @@ func TestMigrateConfigCreatesNestedPaths(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 
 	original := map[string]interface{}{"config_version": 1}
-	data, _ := json.MarshalIndent(original, "", "  ")
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(path, data, 0600)
 
 	values := map[string]string{
@@ -115,9 +123,14 @@ func TestMigrateConfigCreatesNestedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, _ := os.ReadFile(path)
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var updated map[string]interface{}
-	json.Unmarshal(result, &updated)
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
 
 	discord := updated["discord"].(map[string]interface{})
 	if discord["dm_live_trades"] != "true" {
@@ -130,7 +143,10 @@ func TestMigrateConfigNilValues(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 
 	original := map[string]interface{}{"config_version": 2}
-	data, _ := json.MarshalIndent(original, "", "  ")
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(path, data, 0600)
 
 	// nil values — just bump version
@@ -138,9 +154,14 @@ func TestMigrateConfigNilValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, _ := os.ReadFile(path)
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var updated map[string]interface{}
-	json.Unmarshal(result, &updated)
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
 
 	version := int(updated["config_version"].(float64))
 	if version != CurrentConfigVersion {
@@ -153,7 +174,10 @@ func TestMigrateConfigAtomicWrite(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 
 	original := map[string]interface{}{"config_version": 1}
-	data, _ := json.MarshalIndent(original, "", "  ")
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(path, data, 0600)
 
 	MigrateConfig(path, nil)

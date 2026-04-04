@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -17,10 +18,12 @@ func TestStdNormCDF(t *testing.T) {
 		{-2.0, 0.0228},
 	}
 	for _, tc := range cases {
-		got := stdNormCDF(tc.x)
-		if math.Abs(got-tc.want) > 0.001 {
-			t.Errorf("stdNormCDF(%g) = %g, want ~%g", tc.x, got, tc.want)
-		}
+		t.Run(fmt.Sprintf("x=%g", tc.x), func(t *testing.T) {
+			got := stdNormCDF(tc.x)
+			if math.Abs(got-tc.want) > 0.001 {
+				t.Errorf("stdNormCDF(%g) = %g, want ~%g", tc.x, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -34,10 +37,12 @@ func TestStdNormPDF(t *testing.T) {
 		{-1.0, 0.2420}, // symmetric
 	}
 	for _, tc := range cases {
-		got := stdNormPDF(tc.x)
-		if math.Abs(got-tc.want) > 0.001 {
-			t.Errorf("stdNormPDF(%g) = %g, want ~%g", tc.x, got, tc.want)
-		}
+		t.Run(fmt.Sprintf("x=%g", tc.x), func(t *testing.T) {
+			got := stdNormPDF(tc.x)
+			if math.Abs(got-tc.want) > 0.001 {
+				t.Errorf("stdNormPDF(%g) = %g, want ~%g", tc.x, got, tc.want)
+			}
+		})
 	}
 }
 

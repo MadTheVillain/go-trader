@@ -1,44 +1,8 @@
 package main
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
-
-func TestFetchHyperliquidBalanceMocked(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		if r.URL.Path != "/info" {
-			t.Errorf("expected /info path, got %s", r.URL.Path)
-		}
-
-		// Decode request body to verify structure
-		var payload map[string]string
-		json.NewDecoder(r.Body).Decode(&payload)
-		if payload["type"] != "clearinghouseState" {
-			t.Errorf("type = %q, want %q", payload["type"], "clearinghouseState")
-		}
-		if payload["user"] == "" {
-			t.Error("user should be set")
-		}
-
-		resp := map[string]interface{}{
-			"marginSummary": map[string]interface{}{
-				"accountValue": "12345.67",
-			},
-		}
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	// We can't easily inject the server URL into fetchHyperliquidBalance
-	// since it uses a hardcoded URL. Test the response parsing logic instead.
-	// The actual HTTP test would need URL injection.
-}
 
 func TestSyncHyperliquidLiveCapitalSkipsNonHL(t *testing.T) {
 	sc := &StrategyConfig{

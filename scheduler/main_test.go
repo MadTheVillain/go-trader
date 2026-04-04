@@ -47,10 +47,12 @@ func TestHyperliquidSymbol(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := hyperliquidSymbol(tc.args)
-		if got != tc.want {
-			t.Errorf("hyperliquidSymbol(%v) = %q, want %q", tc.args, got, tc.want)
-		}
+		t.Run(tc.want, func(t *testing.T) {
+			got := hyperliquidSymbol(tc.args)
+			if got != tc.want {
+				t.Errorf("hyperliquidSymbol(%v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -75,10 +77,12 @@ func TestTopstepSymbol(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := topstepSymbol(tc.args)
-		if got != tc.want {
-			t.Errorf("topstepSymbol(%v) = %q, want %q", tc.args, got, tc.want)
-		}
+		t.Run(tc.want, func(t *testing.T) {
+			got := topstepSymbol(tc.args)
+			if got != tc.want {
+				t.Errorf("topstepSymbol(%v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -102,10 +106,12 @@ func TestRobinhoodSymbol(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := robinhoodSymbol(tc.args)
-		if got != tc.want {
-			t.Errorf("robinhoodSymbol(%v) = %q, want %q", tc.args, got, tc.want)
-		}
+		t.Run(tc.want, func(t *testing.T) {
+			got := robinhoodSymbol(tc.args)
+			if got != tc.want {
+				t.Errorf("robinhoodSymbol(%v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -129,10 +135,12 @@ func TestOKXSymbol(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := okxSymbol(tc.args)
-		if got != tc.want {
-			t.Errorf("okxSymbol(%v) = %q, want %q", tc.args, got, tc.want)
-		}
+		t.Run(tc.want, func(t *testing.T) {
+			got := okxSymbol(tc.args)
+			if got != tc.want {
+				t.Errorf("okxSymbol(%v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
 	}
 }
 
