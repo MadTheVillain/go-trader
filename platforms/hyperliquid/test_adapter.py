@@ -28,17 +28,18 @@ def _load_hl_adapter(mock_info_cls=None, mock_exchange_cls=None):
     sys.modules["hyperliquid.info"] = info_mod
     sys.modules["hyperliquid.exchange"] = exchange_mod
 
-    adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
-    spec = importlib.util.spec_from_file_location("hl_adapter", adapter_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    # Restore original modules
-    for name, orig in saved.items():
-        if orig is None:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = orig
+    try:
+        adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
+        spec = importlib.util.spec_from_file_location("hl_adapter", adapter_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        # Restore original modules even if loading fails
+        for name, orig in saved.items():
+            if orig is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = orig
 
     return mod
 

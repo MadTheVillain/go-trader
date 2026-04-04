@@ -71,14 +71,13 @@ class TestMarketDataPaper:
         mock_close.iloc.__getitem__ = MagicMock(return_value=5500.0)
         mock_hist.__getitem__ = MagicMock(return_value=mock_close)
 
-        with patch.object(_mod, "yf", create=True) as mock_yf:
-            # patch yfinance at module level in the loaded adapter
-            with patch.dict(sys.modules, {"yfinance": mock_yf}):
-                mock_ticker = MagicMock()
-                mock_ticker.history.return_value = mock_hist
-                mock_yf.Ticker.return_value = mock_ticker
-                price = adapter.get_price("ES")
-                assert price == 5500.0
+        mock_yf = MagicMock()
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = mock_hist
+        mock_yf.Ticker.return_value = mock_ticker
+        with patch.dict(sys.modules, {"yfinance": mock_yf}):
+            price = adapter.get_price("ES")
+            assert price == 5500.0
 
     def test_get_price_unknown_symbol(self):
         adapter = TopStepExchangeAdapter(mode="paper")
@@ -97,11 +96,11 @@ class TestMarketDataPaper:
         }
         hist = pd.DataFrame(data, index=dates)
 
-        with patch.dict(sys.modules, {"yfinance": MagicMock()}) as _:
-            import yfinance as mock_yf
-            mock_ticker = MagicMock()
-            mock_ticker.history.return_value = hist
-            mock_yf.Ticker.return_value = mock_ticker
+        mock_yf = MagicMock()
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = hist
+        mock_yf.Ticker.return_value = mock_ticker
+        with patch.dict(sys.modules, {"yfinance": mock_yf}):
             candles = adapter.get_ohlcv("ES", "1h", 5)
             assert len(candles) == 5
             assert candles[0][4] == 5492  # close
