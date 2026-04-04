@@ -73,11 +73,13 @@ class TestMomentum:
         result = _run("momentum", closes, {"roc_period": 14, "threshold": 3.0})
         _valid_signals(result)
         assert "roc" in result.columns
+        assert (result["signal"] == 1).any()
 
     def test_sell_signal(self):
         closes = list(np.linspace(100, 100, 30)) + list(np.linspace(100, 80, 20))
         result = _run("momentum", closes, {"roc_period": 14, "threshold": 3.0})
         _valid_signals(result)
+        assert (result["signal"] == -1).any()
 
     def test_flat_no_signal(self):
         result = _run("momentum", make_flat(60))
