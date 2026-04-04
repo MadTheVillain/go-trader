@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for strategy tests."""
+"""Shared pytest helpers and fixtures for strategy tests."""
 
 import numpy as np
 import pandas as pd

@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'platforms', 'deribit'))
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, timezone
 
 from adapter import (
@@ -56,7 +56,7 @@ def _make_contract(strike=50000.0, dte=30, option_type=OptionType.CALL,
         symbol=f"BTC-{strike}-C" if option_type == OptionType.CALL else f"BTC-{strike}-P",
         underlying=underlying,
         strike=strike,
-        expiry=datetime.utcnow() + timedelta(days=dte),
+        expiry=datetime.now(timezone.utc) + timedelta(days=dte),
         option_type=option_type,
         bid=0.03,
         ask=0.05,
@@ -412,7 +412,6 @@ class TestCoveredCalls:
         adapter.get_positions.return_value = {pid: pos}
 
         strat = CoveredCallsStrategy(adapter, risk, roll_dte=5, itm_roll_threshold_pct=2.0)
-        strat.adapter = adapter
         actions = strat.manage_positions("BTC")
         assert len(actions) == 1
         assert actions[0]["type"] == "roll"
@@ -426,7 +425,6 @@ class TestCoveredCalls:
         adapter.get_positions.return_value = {pid: pos}
 
         strat = CoveredCallsStrategy(adapter, risk, roll_dte=5, itm_roll_threshold_pct=2.0)
-        strat.adapter = adapter
         actions = strat.manage_positions("BTC")
         assert len(actions) == 1
         assert actions[0]["type"] == "roll"
