@@ -37,12 +37,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
 
       - name: Syntax check
         run: |
           find shared_scripts/ platforms/ shared_strategies/ shared_tools/ \
             -name '*.py' -print0 \
-            | xargs -0 python3 -m py_compile
+            | xargs -0 uv run python3 -m py_compile
+
+      - name: Run tests
+        run: uv run pytest
