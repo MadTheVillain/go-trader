@@ -739,12 +739,7 @@ def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float =
     return result
 
 
-@register_strategy(
-    "delta_neutral_funding",
-    "Delta-Neutral Funding — enter when 7d avg funding rate exceeds threshold, exit when below",
-    {"entry_threshold": 0.0001, "exit_threshold": 0.00005, "drift_threshold": 2.0,
-     "current_funding_rate": 0.0, "avg_funding_rate_7d": 0.0}
-)
+# Not registered in spot — funding rates are perps-only; check_strategy.py never injects params (#102).
 def delta_neutral_funding_strategy(df: pd.DataFrame,
                                    entry_threshold: float = 0.0001,
                                    exit_threshold: float = 0.00005,
@@ -761,11 +756,11 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
     result["signal"] = 0
     if avg == 0.0:
         return result
-    # Positive avg funding = longs pay shorts → short perp collects funding
+    # Positive avg funding = longs pay shorts → SHORT perp to collect (#102)
     if avg > entry_threshold:
-        result.iloc[-1, result.columns.get_loc("signal")] = 1
+        result.iloc[-1, result.columns.get_loc("signal")] = -1  # enter short
     elif avg < exit_threshold:
-        result.iloc[-1, result.columns.get_loc("signal")] = -1
+        result.iloc[-1, result.columns.get_loc("signal")] = 1   # exit short
     return result
 
 

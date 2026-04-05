@@ -500,25 +500,7 @@ class TestParabolicSAR:
 
 # ─── Delta Neutral Funding ──────────────────
 
-class TestDeltaNeutralFunding:
-    def test_entry_signal_on_high_avg(self):
-        closes = make_flat(20)
-        result = _run_strategy("delta_neutral_funding", closes,
-                               {"avg_funding_rate_7d": 0.0005, "entry_threshold": 0.0001})
-        # Last row should have buy signal (avg > entry_threshold → enter delta-neutral)
-        assert result["signal"].iloc[-1] == 1
-
-    def test_exit_signal_on_low_avg(self):
-        closes = make_flat(20)
-        result = _run_strategy("delta_neutral_funding", closes,
-                               {"avg_funding_rate_7d": 0.00003, "exit_threshold": 0.00005})
-        assert result["signal"].iloc[-1] == -1
-
-    def test_no_signal_on_zero_avg(self):
-        closes = make_flat(20)
-        result = _run_strategy("delta_neutral_funding", closes,
-                               {"avg_funding_rate_7d": 0.0})
-        assert (result["signal"] == 0).all()
+# delta_neutral_funding removed from spot registry — perps-only (#102)
 
 
 # ─── Squeeze Momentum ──────────────────────

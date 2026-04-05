@@ -627,10 +627,11 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
     result["signal"] = 0
     if avg == 0.0:
         return result
+    # Positive avg funding = longs pay shorts → SHORT perp to collect (#102)
     if avg > entry_threshold:
-        result.iloc[-1, result.columns.get_loc("signal")] = 1
+        result.iloc[-1, result.columns.get_loc("signal")] = -1  # enter short
     elif avg < exit_threshold:
-        result.iloc[-1, result.columns.get_loc("signal")] = -1
+        result.iloc[-1, result.columns.get_loc("signal")] = 1   # exit short
     return result
 
 

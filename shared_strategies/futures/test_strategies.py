@@ -288,12 +288,13 @@ class TestDeltaNeutralFunding:
     def test_entry_on_high_funding(self):
         result = _run("delta_neutral_funding", make_flat(20),
                        {"avg_funding_rate_7d": 0.0005, "entry_threshold": 0.0001})
-        assert result["signal"].iloc[-1] == 1
+        # Positive funding → SHORT perp to collect (#102)
+        assert result["signal"].iloc[-1] == -1
 
     def test_exit_on_low_funding(self):
         result = _run("delta_neutral_funding", make_flat(20),
                        {"avg_funding_rate_7d": 0.00003, "exit_threshold": 0.00005})
-        assert result["signal"].iloc[-1] == -1
+        assert result["signal"].iloc[-1] == 1
 
     def test_zero_funding_no_signal(self):
         result = _run("delta_neutral_funding", make_flat(20),

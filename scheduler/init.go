@@ -89,7 +89,6 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
-	{ID: "delta_neutral_funding", ShortName: "dnf"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -103,6 +102,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "momentum", ShortName: "momentum"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
+	{ID: "delta_neutral_funding", ShortName: "dnf"},
 }
 
 var defaultFuturesStrategies = []stratDef{
@@ -179,7 +179,8 @@ func discoverStrategies() {
 		}
 		if len(filtered) > 0 {
 			spotStrategies = filtered
-			perpsStrategies = filtered // perps supports the same set as spot
+			// perps supports the same set as spot + delta_neutral_funding (perps-only, #102)
+			perpsStrategies = append(filtered, stratDef{ID: "delta_neutral_funding", ShortName: "dnf"})
 		}
 	}
 	if discovered := discoverPythonStrategies("shared_strategies/options/strategies.py"); len(discovered) > 0 {
