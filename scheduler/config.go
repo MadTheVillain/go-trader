@@ -135,8 +135,16 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	// Telegram bot token from env var takes priority over config file.
-	if telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN"); telegramToken != "" {
-		cfg.Telegram.BotToken = telegramToken
+	// Warn if token is present in config file (env var is preferred).
+	configHasTelegramToken := cfg.Telegram.BotToken != ""
+	envTelegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if envTelegramToken != "" {
+		if configHasTelegramToken {
+			fmt.Println("[WARN] Telegram bot token found in both config file and TELEGRAM_BOT_TOKEN env var. Remove it from config.json to avoid accidental exposure.")
+		}
+		cfg.Telegram.BotToken = envTelegramToken
+	} else if configHasTelegramToken {
+		fmt.Println("[WARN] Telegram bot token found in config file. Prefer setting TELEGRAM_BOT_TOKEN env var instead.")
 	}
 	// Telegram owner chat ID from env var takes priority over config file.
 	if telegramOwner := os.Getenv("TELEGRAM_OWNER_CHAT_ID"); telegramOwner != "" {
