@@ -11,6 +11,7 @@ Environment variables:
 """
 
 import os
+import sys
 import time
 
 MAINNET_URL = "https://api.hyperliquid.xyz"
@@ -202,6 +203,8 @@ class HyperliquidExchangeAdapter:
                 "market_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
         # Round to asset's tick precision to avoid float_to_wire rounding error
+        if symbol not in self._info.asset_to_sz_decimals:
+            print(f"[WARN] sz_decimals not found for {symbol}, defaulting to 3", file=sys.stderr)
         sz_decimals = self._info.asset_to_sz_decimals.get(symbol, 3)
         size = round(size, sz_decimals)
         if size <= 0:
