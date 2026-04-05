@@ -58,6 +58,9 @@
 - ID prefix → platform: `hl-` → hyperliquid, `ibkr-` → ibkr, `deribit-` → deribit, `ts-` → topstep, `rh-` → robinhood, `okx-` → okx, else → binanceus
 - Robinhood options use stock symbols (SPY, QQQ, AAPL) not crypto assets; strategy IDs: `rh-ccall-spy`, `rh-vol-qqq`; options config uses `--platform=robinhood` arg to check_options.py
 - Strategy types: "spot", "options", "perps", "futures" — perps paper mode reuses `ExecuteSpotSignal`; live mode calls `RunHyperliquidExecute` before state update; futures use `ExecuteFuturesSignal` with whole-contract sizing and margin-based budgeting
+- Live execution guard: every platform dispatch in main.go must use `liveExecFailed` pattern — when `runXxxExecuteOrder` returns `ok2=false`, set `liveExecFailed = true` and skip state update; audit with `grep -n "liveExecFailed" scheduler/main.go`
+- `dueStrategies` is built by value-copying `StrategyConfig` from `cfg.Strategies` — mutations to `dueStrategies` elements do NOT persist; any function that needs to update capital/config must operate on `cfg.Strategies` before `dueStrategies` is built
+- `notifier.go` — `MultiNotifier` wraps Discord + Telegram backends; new notification features should add methods to `MultiNotifier`, not access `backends` directly
 - Hyperliquid sys.path conflict: SDK installs as `hyperliquid` package — clashes with `platforms/hyperliquid/`; fix: add `platforms/hyperliquid/` directly to sys.path (not `platforms/`), then `from adapter import HyperliquidExchangeAdapter`
 - Hyperliquid SDK funding rates: `info.meta_and_asset_ctxs()` returns current predicted funding rate per asset (NOT `info.meta()` which only returns universe metadata); `info.funding_history(coin, startTime)` for historical rates; response uses parallel arrays — universe[i] matches asset_ctxs[i]
 - Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0% robinhood, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades); `CalculateFuturesFee(contracts, feePerContract)` and `CalculatePlatformFuturesFee(sc, contracts)` for futures per-contract fees
@@ -71,19 +74,21 @@
 - Adding a cross-platform strategy: create core logic in `shared_strategies/<name>.py` (see `chart_patterns.py`, `liquidity_sweeps.py`), then import+register in both `spot/strategies.py` and `futures/strategies.py`; thin wrapper: `@register_strategy(...)` + `def x(df, **params): return x_core(df, **params)`
 - Adding a new spot/futures strategy (no new platform): (1) add `@register_strategy` function to `shared_strategies/spot/strategies.py`, (2) add same to `shared_strategies/futures/strategies.py`, (3) add short name to `knownShortNames` in `scheduler/init.go` — auto-discovery handles all platform configs
 - Spot and futures have independent `STRATEGY_REGISTRY` dicts — a new strategy must be added to both files with `@register_strategy` decorator; perps auto-discovers from spot via `discoverStrategies()`
+- Perps-only strategies (not in spot registry): must be manually appended in `discoverStrategies()` since `perpsStrategies = filtered` copies from spot
 - New strategies also need: (1) `knownShortNames` entry in `init.go` for the `"name": "abbrev"` mapping, (2) `defaultSpotStrategies` / `defaultPerpsStrategies` / `defaultFuturesStrategies` fallback entries in `init.go`
 - Strategy discovery: `shared_strategies/spot/strategies.py --list-json`, `shared_strategies/options/strategies.py --list-json`, and `shared_strategies/futures/strategies.py --list-json` output JSON arrays of `{"id":..., "description":...}`
 - `apply_strategy(name, df, params)` — optional `params` dict merges with strategy defaults; used to inject external data (e.g. funding rates) into strategies that need non-OHLCV inputs
 - Adding a per-strategy config flag (cross-cutting): (1) add field to `StrategyConfig` in `config.go`, (2) in `main.go` `run*Check` functions append CLI flag to args when enabled, (3) parse flag in each Python check script, (4) add to `InitOptions` + wizard prompt + `generateConfig` in `init.go`
 - `check_strategy.py` uses manual `sys.argv` parsing (not argparse) — when adding flags, filter `--` prefixed args from positional args before indexing; other check scripts (hyperliquid, topstep, robinhood) use `argparse` so just add `parser.add_argument("--flag")`
 - `shared_tools/htf_filter.py` — `htf_trend_filter(symbol, timeframe, fetch_fn)` returns HTF trend via 50 EMA; `apply_htf_filter(signal, htf_trend)` filters counter-trend signals; `fetch_fn` is a callable `(symbol, tf, limit) → DataFrame` so it works across all platforms
-- `StrategyConfig.HTFFilter` — per-strategy bool (`htf_filter` in JSON); Go appends `--htf-filter` to script args; not applied to options strategies
+- `StrategyConfig.HTFFilter` — per-strategy bool (`htf_filter` in JSON); Go appends `--htf-filter` to script args; not applied to options strategies or `delta_neutral_funding` (funding-rate harvest is direction-agnostic); guard in both `generateConfig` and all Python check scripts
+- `delta_neutral_funding` is perps-only (not in spot registry); function lives in `spot/strategies.py` but without `@register_strategy`; registered only in `futures/strategies.py`
 
 ## Pull Requests
 - PR descriptions must reference the related GitHub issue if one exists, using `Closes #<number>` in the body (e.g. `Closes #46`)
 
 ## Build & Deploy
-- Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .`
+- Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .` — always rebuild before smoke-testing `./go-trader`; stale binary gives misleading results
 - Restart: `systemctl restart go-trader`
 - Only needed when `scheduler/*.go` files change
 - Python script changes take effect on next scheduler cycle (no rebuild needed)
@@ -99,7 +104,7 @@
 - When marking an issue fixed: update the row (`NO` → `YES`) **and** the Summary table at the bottom (`Fixed` count +1, `Unfixed` count -1 for that category and Total)
 
 ## Testing
-- `python3 -m py_compile <file>` — syntax check Python files
+- `python3 -m py_compile <file>` — syntax check Python files; run from repo root (`python3 -m py_compile shared_scripts/check_*.py`) — paths are relative to cwd
 - `cd scheduler && /opt/homebrew/bin/go build .` — compile check
 - `cd scheduler && /opt/homebrew/bin/go test ./...` — run all unit tests (must run from scheduler/ where go.mod lives; repo root has no go.mod)
 - `cd scheduler && /opt/homebrew/bin/gofmt -w <file>.go` — format after editing Go files (`-l *.go` lists all files needing formatting)
@@ -110,3 +115,7 @@
 - Smoke test interactive CLI: `printf "answer1\nanswer2\n" | ./go-trader init`
 - Smoke test JSON CLI: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output /tmp/test.json`
 - Smoke test HTF filter: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10,"htfFilter":true}' --output /tmp/test.json` — verify `htf_filter: true` in output
+- Python pytest: `uv run pytest shared_strategies/ -v` (spot + futures + options); `uv run pytest shared_tools/ -v`; `uv run pytest platforms/ -v`
+- Strategy tests must assert actual signal values (e.g. `assert (result["signal"] == 1).any()`), not just column existence
+- Python test imports use `importlib.util.spec_from_file_location` to avoid module naming conflicts (two `strategies.py` files, adapter naming collisions)
+- Go tests: always check `json.Unmarshal` return errors — silent discard masks struct tag/type regressions
