@@ -145,9 +145,6 @@ func TestExecuteSpotSignalBuy(t *testing.T) {
 	if trades != 1 {
 		t.Errorf("trades = %d, want 1", trades)
 	}
-	if s.Cash >= 1000 {
-		t.Error("cash should decrease after buy")
-	}
 	pos := s.Positions["BTC/USDT"]
 	if pos == nil {
 		t.Fatal("should have BTC/USDT position")
@@ -157,6 +154,14 @@ func TestExecuteSpotSignalBuy(t *testing.T) {
 	}
 	if pos.Quantity <= 0 {
 		t.Error("quantity should be positive")
+	}
+
+	// Verify exact post-trade cash: budget = 1000 * 0.95 = 950,
+	// tradeCost = qty * execPrice = budget = 950 (cancels out),
+	// fee = 950 * 0.001 = 0.95, cash = 1000 - 950 - 0.95 = 49.05
+	expectedCash := 1000.0 - 1000.0*0.95 - CalculatePlatformSpotFee("binanceus", 1000.0*0.95)
+	if math.Abs(s.Cash-expectedCash) > 0.01 {
+		t.Errorf("cash = %.4f, want %.4f (initial - budget - fee)", s.Cash, expectedCash)
 	}
 }
 
@@ -187,8 +192,19 @@ func TestExecuteSpotSignalSell(t *testing.T) {
 	if _, ok := s.Positions["BTC/USDT"]; ok {
 		t.Error("position should be closed after sell")
 	}
-	if s.Cash <= 100 {
-		t.Error("cash should increase after sell")
+
+	// Verify exact post-trade cash using recorded execution price.
+	// saleValue = qty * execPrice, fee = saleValue * 0.001,
+	// netProceeds = saleValue - fee, cash = 100 + netProceeds
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected 1 trade in history, got %d", len(s.TradeHistory))
+	}
+	execPrice := s.TradeHistory[0].Price
+	saleValue := 0.01 * execPrice
+	fee := CalculatePlatformSpotFee("binanceus", saleValue)
+	expectedCash := 100.0 + saleValue - fee
+	if math.Abs(s.Cash-expectedCash) > 0.01 {
+		t.Errorf("cash = %.4f, want %.4f (initial + sale - fee)", s.Cash, expectedCash)
 	}
 }
 
