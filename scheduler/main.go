@@ -501,14 +501,19 @@ func main() {
 							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, logger); ok {
 								prices[result.Symbol] = price
 								var execResult *RobinhoodExecuteResult
+								liveExecFailed := false
 								if robinhoodIsLive(sc.Args) && result.Signal != 0 {
 									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhPosQty, logger); ok2 {
 										execResult = er
+									} else {
+										liveExecFailed = true
 									}
 								}
-								mu.Lock()
-								trades, detail = executeRobinhoodResult(sc, stratState, result, execResult, signalStr, price, logger)
-								mu.Unlock()
+								if !liveExecFailed {
+									mu.Lock()
+									trades, detail = executeRobinhoodResult(sc, stratState, result, execResult, signalStr, price, logger)
+									mu.Unlock()
+								}
 							}
 						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, logger); ok {
 							mu.Lock()
@@ -531,14 +536,19 @@ func main() {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, logger); ok {
 								prices[result.Symbol] = price
 								var execResult *OKXExecuteResult
+								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
 									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, logger); ok2 {
 										execResult = er
+									} else {
+										liveExecFailed = true
 									}
 								}
-								mu.Lock()
-								trades, detail = executeOKXResult(sc, stratState, result, execResult, signalStr, price, logger)
-								mu.Unlock()
+								if !liveExecFailed {
+									mu.Lock()
+									trades, detail = executeOKXResult(sc, stratState, result, execResult, signalStr, price, logger)
+									mu.Unlock()
+								}
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, logger); ok {
 							prices[result.Symbol] = price
