@@ -360,6 +360,15 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "capital_pct must be in (0, 1]",
 		},
 		{
+			name: "capital_pct hyperliquid missing account address",
+			cfg: Config{
+				Strategies: []StrategyConfig{{
+					ID: "hl-test", Type: "perps", Script: "check.py", Platform: "hyperliquid", CapitalPct: 0.5, MaxDrawdownPct: 10,
+				}},
+			},
+			wantErr: "capital_pct requires HYPERLIQUID_ACCOUNT_ADDRESS env var",
+		},
+		{
 			name: "negative interval",
 			cfg: Config{
 				Strategies: []StrategyConfig{{

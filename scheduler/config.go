@@ -353,6 +353,12 @@ func ValidateConfig(cfg *Config) error {
 			if sc.Capital > 0 {
 				fmt.Printf("[WARN] %s: both capital ($%.0f) and capital_pct (%.0f%%) set — capital_pct takes priority\n", sc.ID, sc.Capital, sc.CapitalPct*100)
 			}
+			// #101: capital_pct on hyperliquid requires account address for balance fetch.
+			if sc.CapitalPct > 0 && sc.Platform == "hyperliquid" {
+				if os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") == "" {
+					errs = append(errs, fmt.Sprintf("%s: capital_pct requires HYPERLIQUID_ACCOUNT_ADDRESS env var", prefix))
+				}
+			}
 		}
 
 		// #36: Capital must be > 0 (unless capital_pct is set).
