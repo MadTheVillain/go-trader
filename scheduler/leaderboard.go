@@ -12,18 +12,18 @@ import (
 
 // LeaderboardEntry holds pre-computed PnL data for one strategy.
 type LeaderboardEntry struct {
-	ID       string  `json:"id"`
-	Type     string  `json:"type"`
-	Value    float64 `json:"value"`
-	Capital  float64 `json:"capital"`
-	PnL      float64 `json:"pnl"`
-	PnLPct   float64 `json:"pnl_pct"`
+	ID      string  `json:"id"`
+	Type    string  `json:"type"`
+	Value   float64 `json:"value"`
+	Capital float64 `json:"capital"`
+	PnL     float64 `json:"pnl"`
+	PnLPct  float64 `json:"pnl_pct"`
 }
 
 // LeaderboardData is the pre-computed leaderboard written to disk each cycle.
 type LeaderboardData struct {
-	Timestamp time.Time                    `json:"timestamp"`
-	Messages  map[string]string            `json:"messages"` // keyed by category: "spot", "perps", "options", "futures", "top10", "bottom10"
+	Timestamp time.Time         `json:"timestamp"`
+	Messages  map[string]string `json:"messages"` // keyed by category: "spot", "perps", "options", "futures", "top10", "bottom10"
 }
 
 // leaderboardPath returns the path for the pre-computed leaderboard file,
@@ -62,8 +62,8 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 			Type:    sc.Type,
 			Value:   pv,
 			Capital: capital,
-			PnL:    pnl,
-			PnLPct: pnlPct,
+			PnL:     pnl,
+			PnLPct:  pnlPct,
 		}
 		allEntries = append(allEntries, entry)
 		typeEntries[sc.Type] = append(typeEntries[sc.Type], entry)
