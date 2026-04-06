@@ -393,6 +393,7 @@ Start from `scheduler/config.example.json` as a template. For each enabled strat
 - `capital`: User's chosen amount
 - `max_drawdown_pct`: User's chosen value (spot default: 60, options default: 40)
 - `interval_seconds`: 300 for spot, 1200 for options
+- `params`: Optional — custom strategy parameter overrides (e.g. `{"multiplier": 2.0, "atr_period": 10}`). Merged with strategy defaults at runtime.
 - `theta_harvest`: If enabled, include the config block
 
 Discord config:
@@ -1043,6 +1044,8 @@ Each entry in the `strategies` array supports:
 | Capital | `capital` | 1000 | Starting capital in USD for this strategy |
 | Max drawdown | `max_drawdown_pct` | Spot: 60, Options: 40 | Circuit breaker triggers when drawdown from peak exceeds this %. Measured from the strategy's peak portfolio value, not initial capital. |
 | Check interval | `interval_seconds` | Uses global | How often this strategy checks for signals (seconds). 0 = use global default. Spot typically 300 (5 min), options 1200 (20 min). |
+| HTF filter | `htf_filter` | false | Enable higher-timeframe trend filter (filters counter-trend signals) |
+| Custom params | `params` | null | JSON object of strategy parameter overrides (e.g. `{"multiplier": 2.0, "atr_period": 10}`). Merged with strategy defaults; runtime params like funding rates take priority. |
 | Theta harvest | `theta_harvest.enabled` | false | Enable early exit on sold options |
 | Theta profit target | `theta_harvest.profit_target_pct` | 60 | Close sold option when this % of premium is captured |
 | Theta stop loss | `theta_harvest.stop_loss_pct` | 200 | Close sold option if loss exceeds this % of premium (200 = 2× premium) |
@@ -1097,6 +1100,24 @@ To change deribit-vol-btc to $2,000 capital with 50% max drawdown and theta harv
 ```
 
 Then restart: `sudo systemctl restart go-trader`
+
+To run supertrend on ES futures with a tighter multiplier for faster signals:
+
+```json
+{
+  "id": "ts-st-es",
+  "type": "futures",
+  "platform": "topstep",
+  "script": "shared_scripts/check_topstep.py",
+  "args": ["supertrend", "ES", "5m", "--mode=paper"],
+  "capital": 5000,
+  "max_drawdown_pct": 10,
+  "interval_seconds": 300,
+  "params": {"multiplier": 2.0, "atr_period": 10}
+}
+```
+
+The `params` field overrides strategy defaults — here it uses a 2.0 multiplier (default 3.0) for faster trend-flip detection on 5-minute candles.
 
 **Note:** Changing `capital` on an existing strategy does NOT reset its positions or cash. It only changes the `initial_capital` reference for PnL calculations. To fully reset a strategy, delete it from `scheduler/state.json` and restart.
 

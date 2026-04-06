@@ -318,7 +318,29 @@ To get your Discord user ID: right-click your username in Discord → **Copy Use
 | `capital` | Starting capital in USD | 1000 |
 | `max_drawdown_pct` | Circuit breaker threshold (from peak) | Spot: 5%, Options: 10%, Perps: 5% |
 | `interval_seconds` | Check interval (0 = use global) | 0 |
+| `htf_filter` | Enable higher-timeframe trend filter | false |
+| `params` | Custom strategy parameters (e.g. `{"multiplier": 2.0}`) | null |
 | `theta_harvest` | Early exit config for sold options | null |
+
+### Custom Strategy Parameters
+
+Override default strategy parameters per-strategy. Useful for tuning indicators to specific assets or timeframes:
+
+```json
+{
+  "id": "ts-st-es",
+  "type": "futures",
+  "platform": "topstep",
+  "script": "shared_scripts/check_topstep.py",
+  "args": ["supertrend", "ES", "5m", "--mode=paper"],
+  "capital": 5000,
+  "max_drawdown_pct": 10,
+  "interval_seconds": 300,
+  "params": {"multiplier": 2.0, "atr_period": 10}
+}
+```
+
+The `params` object is passed to `apply_strategy()` and merged with the strategy's built-in defaults. Any key in `params` overrides the corresponding default. For strategies that also receive runtime data (e.g. Hyperliquid/OKX funding rates), runtime values take priority over config params.
 
 ### Theta Harvesting (Options)
 
