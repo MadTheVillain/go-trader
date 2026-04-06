@@ -20,6 +20,7 @@ func main() {
 	configPath := flag.String("config", "scheduler/config.json", "Path to config file")
 	once := flag.Bool("once", false, "Run one cycle and exit")
 	summary := flag.String("summary", "", "Post snapshot summary for the specified channel (e.g., hyperliquid, spot, options) and exit")
+	leaderboard := flag.Bool("leaderboard", false, "Post pre-computed daily leaderboard and exit")
 	flag.Parse()
 
 	// Load config
@@ -171,6 +172,21 @@ func main() {
 	// that would be hard-killed by os.Exit.
 	if *summary != "" {
 		runSummaryAndExit(*summary, cfg, state, notifier)
+	}
+
+	// -leaderboard mode: post pre-computed leaderboard and exit.
+	// Reads leaderboard.json (written each cycle) and posts to Discord — no
+	// price fetching or PnL computation needed, so it completes in seconds.
+	if *leaderboard {
+		if !notifier.HasBackends() {
+			fmt.Fprintf(os.Stderr, "No notification backends configured\n")
+			os.Exit(1)
+		}
+		if err := PostLeaderboard(cfg, notifier); err != nil {
+			fmt.Fprintf(os.Stderr, "Leaderboard post failed: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 
 	// Config migration: DM owner about new fields if config is behind current version.
@@ -720,6 +736,10 @@ func main() {
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
 		} else {
 			saveFailures = 0
+		}
+		// Pre-compute leaderboard data so the cron job can post without computation.
+		if err := PrecomputeLeaderboard(cfg, state, prices); err != nil {
+			fmt.Printf("[WARN] Leaderboard pre-compute failed: %v\n", err)
 		}
 		mu.Unlock()
 
