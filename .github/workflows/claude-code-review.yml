@@ -28,3 +28,27 @@ jobs:
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           claude_args: '--model claude-opus-4-6 --effort high'
+
+      - name: Post review results to PR
+        if: always() && steps.claude-review.outputs.result
+        uses: actions/github-script@v7
+        env:
+          REVIEW_RESULT: ${{ steps.claude-review.outputs.result }}
+        with:
+          script: |
+            const result = process.env.REVIEW_RESULT;
+            if (!result || result.trim() === '') {
+              console.log('No review output to post.');
+              return;
+            }
+            const body = `## Claude Code Review Results\n\n${result}`;
+            const maxLen = 65000;
+            const truncated = body.length > maxLen
+              ? body.substring(0, maxLen) + '\n\n...(truncated)'
+              : body;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: truncated
+            });
