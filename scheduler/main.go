@@ -845,6 +845,8 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, logger *Strategy
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
 			args = append(args, "--params", string(paramsJSON))
+		} else {
+			logger.Warn("Failed to marshal strategy params: %v", err)
 		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
@@ -1046,6 +1048,8 @@ func runHyperliquidCheck(sc StrategyConfig, prices map[string]float64, logger *S
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
 			args = append(args, "--params", string(paramsJSON))
+		} else {
+			logger.Warn("Failed to marshal strategy params: %v", err)
 		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
@@ -1182,6 +1186,8 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, logger *Strat
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
 			args = append(args, "--params", string(paramsJSON))
+		} else {
+			logger.Warn("Failed to marshal strategy params: %v", err)
 		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
@@ -1339,6 +1345,8 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, logger *Str
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
 			args = append(args, "--params", string(paramsJSON))
+		} else {
+			logger.Warn("Failed to marshal strategy params: %v", err)
 		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
@@ -1482,6 +1490,8 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, logger *StrategyL
 		paramsJSON, err := json.Marshal(sc.Params)
 		if err == nil {
 			args = append(args, "--params", string(paramsJSON))
+		} else {
+			logger.Warn("Failed to marshal strategy params: %v", err)
 		}
 	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
