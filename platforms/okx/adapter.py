@@ -88,6 +88,17 @@ class OKXExchangeAdapter:
                 continue
         return 0.0
 
+    def get_perp_price(self, symbol: str) -> float:
+        """Get current last price for a perpetual swap (e.g. 'BTC')."""
+        try:
+            ticker = self._exchange.fetch_ticker(f"{symbol}/USDT:USDT")
+            price = ticker.get("last") or 0
+            if price and price > 0:
+                return float(price)
+        except Exception:
+            pass
+        return 0.0
+
     def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
         """
         Fetch OHLCV candles from OKX.
@@ -179,16 +190,17 @@ class OKXExchangeAdapter:
             )
         pair = f"{symbol}/USDT:USDT"
         positions = self._exchange.fetch_positions([pair])
+        results = []
         for pos in positions:
             contracts = float(pos.get("contracts", 0) or 0)
             if contracts > 0:
                 pos_side = pos.get("side", "")
                 close_side = "sell" if pos_side == "long" else "buy"
-                return self._exchange.create_market_order(
+                results.append(self._exchange.create_market_order(
                     pair, close_side, contracts,
                     params={"tdMode": "cross", "reduceOnly": True}
-                )
-        return {}
+                ))
+        return results[0] if results else {}
 
     # ─────────────────────────────────────────────
     # Options Protocol methods
@@ -252,6 +264,7 @@ class OKXExchangeAdapter:
 
         best_exp = None
         best_diff = float("inf")
+        best_dte = 0
         for exp_ts in expiries:
             exp_dt = datetime.fromtimestamp(exp_ts / 1000, tz=timezone.utc)
             dte = (exp_dt - now).days
@@ -323,7 +336,7 @@ class OKXExchangeAdapter:
                 if (market.get("type") == "option"
                         and market.get("base", "").upper() == underlying.upper()
                         and market.get("optionType") == option_type
-                        and market.get("strike") == strike
+                        and float(market.get("strike") or 0) == strike
                         and market.get("active", True)):
                     mkt_exp = market.get("expiry")
                     if mkt_exp and exp_start <= int(mkt_exp) < exp_end:

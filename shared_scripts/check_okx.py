@@ -118,7 +118,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         # Freshen price with live mid if available
         try:
-            mid = adapter.get_spot_price(symbol)
+            if inst_type == "swap":
+                mid = adapter.get_perp_price(symbol)
+            else:
+                mid = adapter.get_spot_price(symbol)
             if mid > 0:
                 price = mid
         except Exception:
