@@ -141,6 +141,25 @@ func TestTelegramResponse_Error(t *testing.T) {
 	}
 }
 
+func TestApiCallDoesNotLeakToken(t *testing.T) {
+	tn := &TelegramNotifier{
+		botToken: "secret-test-token-12345",
+		client:   &http.Client{Timeout: 50 * time.Millisecond},
+	}
+	// Call with no server running — will fail with connection error
+	_, err := tn.apiCall("getMe", nil)
+	if err == nil {
+		t.Fatal("expected error from unreachable server")
+	}
+	if strings.Contains(err.Error(), "secret-test-token-12345") {
+		t.Errorf("bot token leaked in error message: %v", err)
+	}
+	// Verify the error still contains useful diagnostic info
+	if !strings.Contains(err.Error(), "getMe") {
+		t.Errorf("error should mention the API method, got: %v", err)
+	}
+}
+
 func TestDiscordNotifier_ImplementsNotifier(t *testing.T) {
 	// Compile-time check that DiscordNotifier implements Notifier
 	var _ Notifier = (*DiscordNotifier)(nil)

@@ -103,7 +103,9 @@ func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegra
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, err
+		// Redact bot token from error to prevent leaking in logs.
+		safeMsg := strings.ReplaceAll(err.Error(), t.botToken, "[REDACTED]")
+		return nil, fmt.Errorf("telegram %s: %s", method, safeMsg)
 	}
 	defer resp.Body.Close()
 

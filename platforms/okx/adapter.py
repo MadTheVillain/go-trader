@@ -190,16 +190,17 @@ class OKXExchangeAdapter:
             )
         pair = f"{symbol}/USDT:USDT"
         positions = self._exchange.fetch_positions([pair])
+        results = []
         for pos in positions:
             contracts = float(pos.get("contracts", 0) or 0)
             if contracts > 0:
                 pos_side = pos.get("side", "")
                 close_side = "sell" if pos_side == "long" else "buy"
-                return self._exchange.create_market_order(
+                results.append(self._exchange.create_market_order(
                     pair, close_side, contracts,
                     params={"tdMode": "cross", "reduceOnly": True}
-                )
-        return {}
+                ))
+        return results[0] if results else {}
 
     # ─────────────────────────────────────────────
     # Options Protocol methods
