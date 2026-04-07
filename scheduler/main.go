@@ -747,7 +747,24 @@ func main() {
 		if err := PrecomputeLeaderboard(cfg, state, prices); err != nil {
 			fmt.Printf("[WARN] Leaderboard pre-compute failed: %v\n", err)
 		}
+
+		// Periodic hyperliquid top-10 summary (#176).
+		var top10Msg string
+		if cfg.HyperliquidTop10Freq != "" {
+			if freq, err := time.ParseDuration(cfg.HyperliquidTop10Freq); err == nil && time.Since(state.LastTop10Summary) >= freq {
+				top10Msg = FormatHyperliquidTop10(cfg, state, prices)
+				if top10Msg != "" {
+					state.LastTop10Summary = time.Now().UTC()
+				}
+			}
+		}
 		mu.Unlock()
+
+		// Post top-10 outside the lock to avoid holding mu during I/O.
+		if top10Msg != "" {
+			notifier.SendToChannel("hyperliquid", "perps", top10Msg)
+			fmt.Println("[top10] Posted hyperliquid top-10 summary")
+		}
 
 		// Periodic update check (heartbeat: every cycle; daily: once per day).
 		if cfg.AutoUpdate == "heartbeat" {
