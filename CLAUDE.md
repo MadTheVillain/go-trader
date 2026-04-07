@@ -106,6 +106,7 @@
 - When marking an issue fixed: update the row (`NO` → `YES`) **and** the Summary table at the bottom (`Fixed` count +1, `Unfixed` count -1 for that category and Total)
 
 ## Testing
+- **New functionality must include tests** — Go changes need `_test.go` coverage; Python changes need `test_*.py` coverage. Bug fixes should include a regression test when feasible.
 - `python3 -m py_compile <file>` — syntax check Python files; run from repo root (`python3 -m py_compile shared_scripts/check_*.py`) — paths are relative to cwd
 - `cd scheduler && /opt/homebrew/bin/go build .` — compile check
 - `cd scheduler && /opt/homebrew/bin/go test ./...` — run all unit tests (must run from scheduler/ where go.mod lives; repo root has no go.mod)
