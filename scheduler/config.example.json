@@ -58,6 +58,7 @@
       "interval_seconds": 900
     }
   ],
+  "leaderboard_post_time": "11:00",
   "platforms": {
     "hyperliquid": {
       "state_file": "platforms/hyperliquid/state.json"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,8 +63,9 @@ type Config struct {
 	StatusToken          string                     `json:"-"` // loaded from STATUS_AUTH_TOKEN env var only
 	Discord              DiscordConfig              `json:"discord"`
 	Telegram             TelegramConfig             `json:"telegram,omitempty"`
-	AutoUpdate           string                     `json:"auto_update,omitempty"` // "off", "daily", "heartbeat" (default: "off")
+	AutoUpdate           string                     `json:"auto_update,omitempty"`            // "off", "daily", "heartbeat" (default: "off")
 	HyperliquidTop10Freq string                     `json:"hyperliquid_top10_freq,omitempty"` // e.g. "6h" — post top-10 HL summary at this interval (default: "" = disabled)
+	LeaderboardPostTime  string                     `json:"leaderboard_post_time,omitempty"`  // "HH:MM" in UTC; auto-post daily leaderboard at this time (empty = disabled)
 	Strategies           []StrategyConfig           `json:"strategies"`
 	PortfolioRisk        *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
 	Correlation          *CorrelationConfig         `json:"correlation,omitempty"`
@@ -253,10 +255,37 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// ParseLeaderboardPostTime parses a "HH:MM" string and returns (hour, minute, ok).
+func ParseLeaderboardPostTime(s string) (int, int, bool) {
+	if s == "" {
+		return 0, 0, false
+	}
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	h, err := strconv.Atoi(parts[0])
+	if err != nil || h < 0 || h > 23 {
+		return 0, 0, false
+	}
+	m, err2 := strconv.Atoi(parts[1])
+	if err2 != nil || m < 0 || m > 59 {
+		return 0, 0, false
+	}
+	return h, m, true
+}
+
 // ValidateConfig checks script paths and strategy fields (#34, #36).
 func ValidateConfig(cfg *Config) error {
 	var errs []string
 	seenIDs := make(map[string]bool)
+
+	// Validate leaderboard_post_time format if set.
+	if cfg.LeaderboardPostTime != "" {
+		if _, _, ok := ParseLeaderboardPostTime(cfg.LeaderboardPostTime); !ok {
+			errs = append(errs, fmt.Sprintf("leaderboard_post_time must be in \"HH:MM\" format (24h UTC), got %q", cfg.LeaderboardPostTime))
+		}
+	}
 
 	for i, sc := range cfg.Strategies {
 		prefix := fmt.Sprintf("strategy[%d]", i)

@@ -504,3 +504,95 @@ func TestValidateConfigPortfolioRisk(t *testing.T) {
 		t.Errorf("error should mention portfolio_risk.max_drawdown_pct: %v", err)
 	}
 }
+
+func TestParseLeaderboardPostTime(t *testing.T) {
+	tests := []struct {
+		input  string
+		wantH  int
+		wantM  int
+		wantOK bool
+	}{
+		{"11:00", 11, 0, true},
+		{"09:30", 9, 30, true},
+		{"23:59", 23, 59, true},
+		{"00:00", 0, 0, true},
+		{"", 0, 0, false},
+		{"25:00", 0, 0, false},
+		{"12:61", 0, 0, false},
+		{"noon", 0, 0, false},
+		{"12", 0, 0, false},
+		{"-1:00", 0, 0, false},
+		{"12:-5", 0, 0, false},
+		{"1a:00", 0, 0, false},
+		{" 5:00", 0, 0, false},
+		{"12:3x", 0, 0, false},
+	}
+	for _, tt := range tests {
+		h, m, ok := ParseLeaderboardPostTime(tt.input)
+		if ok != tt.wantOK {
+			t.Errorf("ParseLeaderboardPostTime(%q): ok=%v, want %v", tt.input, ok, tt.wantOK)
+			continue
+		}
+		if ok && (h != tt.wantH || m != tt.wantM) {
+			t.Errorf("ParseLeaderboardPostTime(%q) = (%d, %d), want (%d, %d)", tt.input, h, m, tt.wantH, tt.wantM)
+		}
+	}
+}
+
+func TestValidateConfigLeaderboardPostTime(t *testing.T) {
+	base := Config{
+		Strategies: []StrategyConfig{{
+			ID: "test", Type: "spot", Script: "shared_scripts/check_strategy.py",
+			Args: []string{"sma_crossover", "BTC/USDT", "1h"}, Capital: 1000, MaxDrawdownPct: 60,
+			Platform: "binanceus",
+		}},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+
+	// Valid time should pass.
+	cfg := base
+	cfg.LeaderboardPostTime = "11:00"
+	if err := ValidateConfig(&cfg); err != nil {
+		t.Errorf("expected valid config with leaderboard_post_time=11:00, got: %v", err)
+	}
+
+	// Empty (disabled) should pass.
+	cfg2 := base
+	cfg2.LeaderboardPostTime = ""
+	if err := ValidateConfig(&cfg2); err != nil {
+		t.Errorf("expected valid config with empty leaderboard_post_time, got: %v", err)
+	}
+
+	// Invalid format should fail.
+	cfg3 := base
+	cfg3.LeaderboardPostTime = "noon"
+	err := ValidateConfig(&cfg3)
+	if err == nil {
+		t.Fatal("expected error for invalid leaderboard_post_time")
+	}
+	if !strings.Contains(err.Error(), "leaderboard_post_time") {
+		t.Errorf("error should mention leaderboard_post_time: %v", err)
+	}
+}
+
+func TestLoadConfigLeaderboardPostTime(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"leaderboard_post_time": "09:30",
+		"strategies": [{
+			"id": "test-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000
+		}]
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.LeaderboardPostTime != "09:30" {
+		t.Errorf("LeaderboardPostTime = %q, want %q", cfg.LeaderboardPostTime, "09:30")
+	}
+}

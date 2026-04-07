@@ -771,12 +771,40 @@ func main() {
 		} else {
 			saveFailures = 0
 		}
+		// Pre-compute leaderboard data so the cron job can post without computation.
+		if err := PrecomputeLeaderboard(cfg, state, prices); err != nil {
+			fmt.Printf("[WARN] Leaderboard pre-compute failed: %v\n", err)
+		}
+
+		// #175: Decide whether to auto-post daily leaderboard (check inside lock).
+		var postLeaderboard bool
+		if h, m, ok := ParseLeaderboardPostTime(cfg.LeaderboardPostTime); ok && notifier.HasBackends() {
+			now := time.Now().UTC()
+			today := now.Format("2006-01-02")
+			targetMinute := h*60 + m
+			currentMinute := now.Hour()*60 + now.Minute()
+			if currentMinute >= targetMinute && state.LastLeaderboardPostDate != today {
+				postLeaderboard = true
+			}
+		}
 		mu.Unlock()
 
 		// Post top-10 outside the lock to avoid holding mu during I/O.
 		if top10Msg != "" {
 			notifier.SendToChannel("hyperliquid", "perps", top10Msg)
 			fmt.Println("[top10] Posted hyperliquid top-10 summary")
+		}
+
+		// Post leaderboard outside the lock to avoid holding mu during I/O.
+		if postLeaderboard {
+			fmt.Printf("[leaderboard] Auto-posting daily leaderboard (configured time: %s UTC)\n", cfg.LeaderboardPostTime)
+			if err := PostLeaderboard(cfg, notifier); err != nil {
+				fmt.Printf("[WARN] Leaderboard auto-post failed: %v\n", err)
+			} else {
+				mu.Lock()
+				state.LastLeaderboardPostDate = time.Now().UTC().Format("2006-01-02")
+				mu.Unlock()
+			}
 		}
 
 		// Periodic update check (heartbeat: every cycle; daily: once per day).
