@@ -252,6 +252,7 @@ class OKXExchangeAdapter:
 
         best_exp = None
         best_diff = float("inf")
+        best_dte = 0
         for exp_ts in expiries:
             exp_dt = datetime.fromtimestamp(exp_ts / 1000, tz=timezone.utc)
             dte = (exp_dt - now).days
