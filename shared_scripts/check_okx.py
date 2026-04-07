@@ -119,10 +119,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         # Freshen price with live mid if available
         try:
             if inst_type == "swap":
-                # Use perp ticker to avoid spot/perp price divergence
-                pair = f"{symbol}/USDT:USDT"
-                ticker = adapter._exchange.fetch_ticker(pair)
-                mid = float(ticker.get("last") or 0)
+                mid = adapter.get_perp_price(symbol)
             else:
                 mid = adapter.get_spot_price(symbol)
             if mid > 0:
