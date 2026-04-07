@@ -62,6 +62,7 @@ type telegramMsg struct {
 	MessageID int64         `json:"message_id"`
 	From      *telegramUser `json:"from,omitempty"`
 	Chat      telegramChat  `json:"chat"`
+	Date      int64         `json:"date"`
 	Text      string        `json:"text"`
 }
 
@@ -143,6 +144,8 @@ func (t *TelegramNotifier) SendDM(userID, content string) error {
 
 // AskDM sends a question to the user and polls for a reply within the timeout.
 func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
+	sentAt := time.Now().Unix()
+
 	if err := t.SendDM(userID, question); err != nil {
 		return "", fmt.Errorf("send question: %w", err)
 	}
@@ -175,7 +178,7 @@ func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration)
 		for _, u := range updates {
 			if u.Message != nil && u.Message.From != nil {
 				fromID := fmt.Sprintf("%d", u.Message.From.ID)
-				if fromID == userID {
+				if fromID == userID && u.Message.Date >= sentAt {
 					return strings.TrimSpace(u.Message.Text), nil
 				}
 			}
