@@ -207,6 +207,27 @@ class TestOrderExecution:
         result = a.market_close("BTC")
         assert result == {}
 
+    def test_market_close_hedge_mode_closes_both(self, adapter):
+        a, mock_ex = adapter
+        a._is_live = True
+        mock_ex.fetch_positions.return_value = [
+            {"contracts": "1.5", "side": "long"},
+            {"contracts": "0.8", "side": "short"},
+        ]
+        mock_ex.create_market_order.side_effect = [{"id": "aaa"}, {"id": "bbb"}]
+        result = a.market_close("BTC")
+        assert mock_ex.create_market_order.call_count == 2
+        # Verify first call closes the long (sell side)
+        first_call = mock_ex.create_market_order.call_args_list[0]
+        assert first_call[0][1] == "sell"  # close long = sell
+        assert first_call[0][2] == 1.5
+        # Verify second call closes the short (buy side)
+        second_call = mock_ex.create_market_order.call_args_list[1]
+        assert second_call[0][1] == "buy"  # close short = buy
+        assert second_call[0][2] == 0.8
+        # Returns first result
+        assert result == {"id": "aaa"}
+
 
 # ─── Options Protocol ──────────────────────────────
 
