@@ -103,7 +103,7 @@ func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegra
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("telegram %s request failed: connection error", method)
 	}
 	defer resp.Body.Close()
 
