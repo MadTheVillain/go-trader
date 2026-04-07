@@ -88,6 +88,17 @@ class OKXExchangeAdapter:
                 continue
         return 0.0
 
+    def get_perp_price(self, symbol: str) -> float:
+        """Get current last price for a perpetual swap (e.g. 'BTC')."""
+        try:
+            ticker = self._exchange.fetch_ticker(f"{symbol}/USDT:USDT")
+            price = ticker.get("last") or 0
+            if price and price > 0:
+                return float(price)
+        except Exception:
+            pass
+        return 0.0
+
     def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
         """
         Fetch OHLCV candles from OKX.
