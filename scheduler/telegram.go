@@ -19,7 +19,8 @@ type TelegramNotifier struct {
 	botToken    string
 	ownerChatID string
 	client      *http.Client
-	lastUpdate  int64 // offset for getUpdates polling
+	baseURL     string // API base URL (defaults to telegramAPIBase)
+	lastUpdate  int64  // offset for getUpdates polling
 	mu          sync.Mutex
 	closed      bool
 }
@@ -30,6 +31,7 @@ func NewTelegramNotifier(botToken, ownerChatID string) (*TelegramNotifier, error
 		botToken:    botToken,
 		ownerChatID: ownerChatID,
 		client:      &http.Client{Timeout: 35 * time.Second},
+		baseURL:     telegramAPIBase,
 	}
 
 	// Verify the bot token with a getMe call.
@@ -83,7 +85,7 @@ type telegramCBData struct {
 
 // apiCall makes a POST request to the Telegram Bot API.
 func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegramResponse, error) {
-	url := telegramAPIBase + t.botToken + "/" + method
+	url := t.baseURL + t.botToken + "/" + method
 
 	var body io.Reader
 	if payload != nil {

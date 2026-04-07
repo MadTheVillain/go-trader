@@ -16,6 +16,7 @@ func newTestTelegramNotifier(serverURL string) *TelegramNotifier {
 		botToken:    "test-token",
 		ownerChatID: "12345",
 		client:      &http.Client{Timeout: 5 * time.Second},
+		baseURL:     serverURL + "/bot",
 	}
 }
 
@@ -37,25 +38,17 @@ func TestTelegramNotifier_SendMessage(t *testing.T) {
 	defer server.Close()
 
 	tg := newTestTelegramNotifier(server.URL)
-	// Override the apiCall to use our test server
-	tg.botToken = "test-token"
 
-	// Test the message truncation logic directly
-	longMsg := strings.Repeat("a", telegramMaxMessageLen+100)
-	if len(longMsg) <= telegramMaxMessageLen {
-		t.Fatal("test setup error: message should exceed max length")
+	err := tg.SendMessage("67890", "hello world")
+	if err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
 	}
-
-	// Test that SendMessage truncates (we can't test the actual API call without more setup,
-	// but we can test the interface compliance)
-	var n Notifier = tg
-	_ = n // Verify TelegramNotifier implements Notifier
-
-	// Use the test server to verify sends
-	origBase := telegramAPIBase
-	_ = origBase
-	_ = receivedChatID
-	_ = receivedText
+	if receivedChatID != "67890" {
+		t.Errorf("expected chat_id '67890', got %q", receivedChatID)
+	}
+	if receivedText != "hello world" {
+		t.Errorf("expected text 'hello world', got %q", receivedText)
+	}
 }
 
 func TestTelegramNotifier_ImplementsNotifier(t *testing.T) {
@@ -91,26 +84,40 @@ func TestTelegramNotifier_SendDM_IsSendMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// We can verify the interface at compile time
-	tg := &TelegramNotifier{
-		botToken: "test",
-		client:   &http.Client{Timeout: 5 * time.Second},
+	tg := newTestTelegramNotifier(server.URL)
+
+	err := tg.SendDM("99999", "dm content")
+	if err != nil {
+		t.Fatalf("SendDM returned error: %v", err)
 	}
-	_ = tg
-	_ = sentChatID
+	if sentChatID != "99999" {
+		t.Errorf("expected chat_id '99999', got %q", sentChatID)
+	}
 }
 
 func TestTelegramNotifier_MessageTruncation(t *testing.T) {
-	// Verify that messages exceeding 4096 chars are truncated
+	var receivedText string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		receivedText, _ = body["text"].(string)
+		json.NewEncoder(w).Encode(telegramResponse{OK: true})
+	}))
+	defer server.Close()
+
+	tg := newTestTelegramNotifier(server.URL)
+
 	longContent := strings.Repeat("x", 5000)
-	if len(longContent) > telegramMaxMessageLen {
-		truncated := longContent[:telegramMaxMessageLen-3] + "..."
-		if len(truncated) != telegramMaxMessageLen {
-			t.Errorf("expected truncated length %d, got %d", telegramMaxMessageLen, len(truncated))
-		}
-		if !strings.HasSuffix(truncated, "...") {
-			t.Error("expected truncated message to end with '...'")
-		}
+	err := tg.SendMessage("123", longContent)
+	if err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+	if len(receivedText) != telegramMaxMessageLen {
+		t.Errorf("expected truncated length %d, got %d", telegramMaxMessageLen, len(receivedText))
+	}
+	if !strings.HasSuffix(receivedText, "...") {
+		t.Error("expected truncated message to end with '...'")
 	}
 }
 
@@ -182,6 +189,7 @@ func TestApiCallDoesNotLeakToken(t *testing.T) {
 	tn := &TelegramNotifier{
 		botToken: "secret-test-token-12345",
 		client:   &http.Client{Timeout: 50 * time.Millisecond},
+		baseURL:  telegramAPIBase,
 	}
 	// Call with no server running — will fail with connection error
 	_, err := tn.apiCall("getMe", nil)
