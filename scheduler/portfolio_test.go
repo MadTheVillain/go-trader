@@ -264,6 +264,41 @@ func TestExecuteSpotSignalInsufficientCash(t *testing.T) {
 	}
 }
 
+func TestExecuteSpotSignalOKXPerpsFee(t *testing.T) {
+	s := NewStrategyState(StrategyConfig{
+		ID:       "okx-perps-test",
+		Type:     "perps",
+		Platform: "okx",
+		Capital:  1000,
+	})
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	_, err := ExecuteSpotSignal(s, 1, "BTC", 50000.0, logger)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Verify fee used OKX perps rate (0.05%), not spot rate (0.10%)
+	// Budget is 95% of 1000 = 950
+	// qty = 950 / slipped_price, fee = qty * slipped_price * 0.0005
+	// Cash should reflect the perps fee rate
+	if len(s.Positions) == 0 {
+		t.Fatal("expected a position to be opened")
+	}
+	pos := s.Positions["BTC"]
+	tradeCost := pos.Quantity * pos.AvgCost
+	expectedFee := tradeCost * OKXPerpsTakerFeePct
+	actualCash := s.Cash
+	expectedCash := 1000.0 - tradeCost - expectedFee
+	// Allow small floating point tolerance
+	diff := actualCash - expectedCash
+	if diff < -0.01 || diff > 0.01 {
+		t.Errorf("cash mismatch: got %.6f, want %.6f (diff %.6f) -- wrong fee rate may have been used", actualCash, expectedCash, diff)
+	}
+}
+
 func TestExecuteFuturesSignalBuy(t *testing.T) {
 	s := &StrategyState{
 		ID:              "test",
