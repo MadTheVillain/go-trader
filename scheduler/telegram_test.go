@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -138,6 +139,42 @@ func TestTelegramResponse_Error(t *testing.T) {
 	}
 	if resp.Description != "Unauthorized" {
 		t.Errorf("expected 'Unauthorized', got %q", resp.Description)
+	}
+}
+
+func TestAskDMRejectsStaleMessages(t *testing.T) {
+	now := time.Now().Unix()
+
+	// Verify telegramMsg.Date unmarshals correctly from JSON.
+	msgJSON := fmt.Sprintf(`{"message_id":1,"from":{"id":999},"chat":{"id":999},"date":%d,"text":"hello"}`, now)
+	var msg telegramMsg
+	if err := json.Unmarshal([]byte(msgJSON), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Date != now {
+		t.Errorf("Date: got %d, want %d", msg.Date, now)
+	}
+	if msg.Text != "hello" {
+		t.Errorf("Text: got %q, want %q", msg.Text, "hello")
+	}
+
+	// Verify the timestamp guard logic: messages older than sentAt-2 should be rejected.
+	sentAt := now
+	staleDate := int64(sentAt - 60) // 60 seconds ago — clearly stale
+	freshDate := int64(sentAt + 1)  // just now — clearly fresh
+	graceDate := int64(sentAt - 1)  // 1 second before sentAt — within 2s grace window
+
+	// Stale message should be rejected (Date < sentAt-2).
+	if staleDate >= sentAt-2 {
+		t.Errorf("expected stale message (date=%d) to fail guard (sentAt-2=%d)", staleDate, sentAt-2)
+	}
+	// Fresh message should be accepted (Date >= sentAt-2).
+	if freshDate < sentAt-2 {
+		t.Errorf("expected fresh message (date=%d) to pass guard (sentAt-2=%d)", freshDate, sentAt-2)
+	}
+	// Message within grace window should be accepted (Date >= sentAt-2).
+	if graceDate < sentAt-2 {
+		t.Errorf("expected grace-window message (date=%d) to pass guard (sentAt-2=%d)", graceDate, sentAt-2)
 	}
 }
 

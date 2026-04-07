@@ -178,7 +178,7 @@ func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration)
 		for _, u := range updates {
 			if u.Message != nil && u.Message.From != nil {
 				fromID := fmt.Sprintf("%d", u.Message.From.ID)
-				if fromID == userID && u.Message.Date >= sentAt {
+				if fromID == userID && u.Message.Date >= sentAt-2 {
 					return strings.TrimSpace(u.Message.Text), nil
 				}
 			}
