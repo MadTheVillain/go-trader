@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+// Tests in this file mutate package-level hlMainnetURL and must NOT use t.Parallel().
+
 func TestSyncHyperliquidLiveCapitalSkipsNonHL(t *testing.T) {
 	sc := &StrategyConfig{
 		ID:       "spot-btc",

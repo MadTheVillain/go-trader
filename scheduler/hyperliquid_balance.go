@@ -172,7 +172,10 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 		if err != nil || szi == 0 {
 			continue
 		}
-		entryPx, _ := strconv.ParseFloat(ap.Position.EntryPx, 64)
+		entryPx, err := strconv.ParseFloat(ap.Position.EntryPx, 64)
+		if err != nil {
+			fmt.Printf("[WARN] hl-sync: failed to parse entryPx %q for %s: %v\n", ap.Position.EntryPx, ap.Position.Coin, err)
+		}
 		positions = append(positions, HLPosition{
 			Coin:       ap.Position.Coin,
 			Size:       szi,
@@ -248,26 +251,27 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, balanc
 // reconciles them with the internal StrategyState. This ensures hlPosQty and
 // hlCash reflect reality before each execution cycle.
 // Must be called WITHOUT holding any lock; acquires Lock internally.
-func syncHyperliquidPositions(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMutex, logger *StrategyLogger) {
+func syncHyperliquidPositions(sc StrategyConfig, stratState *StrategyState, mu *sync.RWMutex, logger *StrategyLogger) bool {
 	accountAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if accountAddr == "" {
-		return
+		return false
 	}
 
 	sym := hyperliquidSymbol(sc.Args)
 	if sym == "" {
-		return
+		return false
 	}
 
 	// Fetch on-chain state (no lock held — I/O).
 	balance, positions, err := fetchHyperliquidState(accountAddr)
 	if err != nil {
 		logger.Warn("hl-sync: failed to fetch on-chain state: %v", err)
-		return
+		return false
 	}
 
 	// Reconcile under Lock.
 	mu.Lock()
-	reconcileHyperliquidPositions(stratState, sym, balance, positions, logger)
+	changed := reconcileHyperliquidPositions(stratState, sym, balance, positions, logger)
 	mu.Unlock()
+	return changed
 }
