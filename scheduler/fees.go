@@ -59,6 +59,8 @@ func CalculatePlatformSpotFee(platform string, value float64) float64 {
 		return 0 // Robinhood charges no crypto commission
 	case "okx":
 		return value * OKXSpotTakerFeePct
+	case "okx-perps":
+		return value * OKXPerpsTakerFeePct
 	default:
 		return CalculateSpotFee(value)
 	}
