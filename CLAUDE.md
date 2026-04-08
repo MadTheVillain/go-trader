@@ -15,12 +15,22 @@
 - `scheduler/` — Go scheduler (single `package main`); all .go files compile together
   - `executor.go` — Python subprocess runner; max 4 concurrent, 30s timeout per script
   - `server.go` — HTTP status server (`/status`, `/health` endpoints)
-  - `discord.go` — `discordgo.Session` wrapper for two-way Discord communication; `NewDiscordNotifier(token, ownerID string) (*DiscordNotifier, error)` — opens WebSocket gateway; `SendMessage(channelID, content)` — channel posts; `SendDM(userID, content)` — DM send; `AskDM(userID, question, timeout)` — send + block on reply (returns `ErrDMTimeout`); intents: `discordgo.IntentsDirectMessages`; DM detection: `m.GuildID == ""`; `FormatCategorySummary(..., channelKey, asset string)` — `asset` non-empty adds " — BTC" suffix + filters prices line; `extractAsset(sc)` uses `Args[1]` as canonical asset source (strips `/USDT` for spot); `groupByAsset(strats)` groups by asset with BTC/ETH/SOL/BNB-first sort; `channelTradeDetails` keyed as `ch+"|"+asset`; `fmtComma` — always pass absolute values
+  - `discord.go` — `discordgo.Session` wrapper for two-way Discord communication; `SendMessage`, `SendDM`, `AskDM` (blocking DM with timeout); `FormatCategorySummary` per-asset Discord messages; `fmtComma` — always pass absolute values
   - `init.go` — `go-trader init` interactive wizard + `--json <blob>` non-interactive mode; `generateConfig(InitOptions) *Config` is pure/testable; `runInitFromJSON(jsonStr, outputPath)` for scripted config gen (e.g. from OpenClaw); `runInit` orchestrates I/O
   - `prompt.go` — `Prompter` struct (String/YesNo/Choice/MultiSelect/Float); inject `NewPrompterFromReader(r,w)` for tests
   - `updater.go` — update checker; `checkForUpdates(cfg, discord, &lastNotifiedHash, &mu, state)` — git fetch, channel notify + DM upgrade prompt (goroutine); `applyUpgrade(discord, ownerID, mu, state, cfg)` — git pull + go build + state save + restart; `restartSelf()` — systemctl → syscall.Exec fallback; logs `[update]` prefix
-  - `correlation.go` — `ComputeCorrelation(strategies, cfgStrategies, prices, corrCfg)` — per-asset directional exposure (delta-USD) across all strategies; `CorrelationSnapshot` with `AssetExposure` per asset; warns on concentration and same-direction thresholds; `findSpotPrice(asset, prices)` resolves asset to price
-  - `config_migration.go` — `CurrentConfigVersion = 5`; `NewFieldsSince(version)` returns new fields; `MigrateConfig(path, values)` atomic JSON patch + version bump; `runConfigMigrationDM(cfg, discord, configPath)` DMs owner per new field with 10min timeout
+  - `correlation.go` — per-asset directional exposure tracking; `ComputeCorrelation` warns on concentration/same-direction thresholds
+  - `config_migration.go` — `CurrentConfigVersion = 5`; auto-migrates config via Discord DM on startup
+  - `balance.go` — balance tracking and capital management
+  - `hyperliquid_balance.go` — Hyperliquid-specific balance sync (`syncHyperliquidAccountPositions`)
+  - `leaderboard.go` — pre-computed strategy leaderboard for Discord summaries
+  - `logger.go` — structured logging utilities
+  - `notifier.go` — `MultiNotifier` wraps Discord + Telegram backends
+  - `options.go` — options position management and expiry tracking
+  - `portfolio.go` — portfolio-level aggregation and reporting
+  - `risk.go` — per-strategy risk checks (drawdown limits, position sizing)
+  - `telegram.go` — Telegram notification backend
+  - `pricer.go` — `OptionPricer` interface; `ibkr_pricer.go` — IBKRPricer with Black-Scholes
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
   - `check_options.py` — unified options checker (`--platform=deribit|ibkr|robinhood|okx`)
@@ -29,7 +39,8 @@
   - `check_topstep.py` — TopStep futures checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders)
   - `check_robinhood.py` — Robinhood crypto checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders; OHLCV via yfinance)
   - `check_okx.py` — OKX spot/perps checker (`<strategy> <symbol> <timeframe> [--mode=paper|live] [--inst-type=spot|swap]`; `--execute` for live orders; CCXT)
-- `platforms/` — platform-specific adapters (deribit, ibkr, binanceus, hyperliquid, topstep, robinhood, okx)
+  - `check_balance.py` — balance/position checker for live account reconciliation
+- `platforms/` — platform-specific adapters (deribit, ibkr, binanceus, hyperliquid, topstep, robinhood, okx, luno)
   - `deribit/adapter.py` — DeribitExchangeAdapter (live quotes, real expiries/strikes)
   - `ibkr/adapter.py` — IBKRExchangeAdapter (CME strikes, Black-Scholes pricing)
   - `binanceus/adapter.py` — BinanceUSExchangeAdapter (spot only)
@@ -37,6 +48,7 @@
   - `topstep/adapter.py` — TopStepExchangeAdapter (CME futures, paper mode via yfinance, live via TopStepX API)
   - `robinhood/adapter.py` — RobinhoodExchangeAdapter (crypto spot + stock options, paper mode via yfinance/Black-Scholes, live via robin_stocks + TOTP MFA)
   - `okx/adapter.py` — OKXExchangeAdapter (spot + perps + options via CCXT; paper mode uses public API, live mode requires `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`)
+  - `luno/adapter.py` — LunoExchangeAdapter (South African crypto exchange)
 - `shared_tools/` — shared Python utilities (pricing.py, exchange_base.py, data_fetcher, storage)
 - `shared_strategies/` — shared strategy logic (spot/, options/, futures/)
 - `backtest/` — backtesting and paper trading scripts
@@ -56,7 +68,7 @@
 - Per-strategy loop uses 6 fine-grained lock phases: RLock(read inputs) → Lock(CheckRisk) → no lock(subprocess) → Lock(execute signal) → RLock/no lock/Lock(mark prices) → RLock(status log)
 - Audit lock balance: `grep -n "mu\.\(R\)\?Lock\(\)\|mu\.\(R\)\?Unlock\(\)" scheduler/main.go`
 - Platform dispatch: `StrategyConfig.Platform` field (inferred from ID prefix in LoadConfig); use `s.Platform == "ibkr"` not ID prefix checks
-- ID prefix → platform: `hl-` → hyperliquid, `ibkr-` → ibkr, `deribit-` → deribit, `ts-` → topstep, `rh-` → robinhood, `okx-` → okx, else → binanceus
+- ID prefix → platform: `hl-` → hyperliquid, `ibkr-` → ibkr, `deribit-` → deribit, `ts-` → topstep, `rh-` → robinhood, `okx-` → okx, `luno-` → luno, else → binanceus
 - Robinhood options use stock symbols (SPY, QQQ, AAPL) not crypto assets; strategy IDs: `rh-ccall-spy`, `rh-vol-qqq`; options config uses `--platform=robinhood` arg to check_options.py
 - Strategy types: "spot", "options", "perps", "futures" — perps paper mode reuses `ExecuteSpotSignal`; live mode calls `RunHyperliquidExecute` before state update; futures use `ExecuteFuturesSignal` with whole-contract sizing and margin-based budgeting
 - Live execution guard: every platform dispatch in main.go must use `liveExecFailed` pattern — when `runXxxExecuteOrder` returns `ok2=false`, set `liveExecFailed = true` and skip state update; audit with `grep -n "liveExecFailed" scheduler/main.go`
