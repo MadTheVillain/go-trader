@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -137,9 +136,9 @@ func ValidateState(state *AppState) {
 	}
 }
 
-// LoadPlatformStates loads state from per-platform state files and merges them into one AppState.
-// Falls back to cfg.StateFile for backwards compatibility when no platforms are configured.
-func LoadPlatformStates(cfg *Config) (*AppState, error) {
+// loadJSONPlatformStates loads state from legacy JSON files for one-time migration to SQLite.
+// Falls back to cfg.StateFile when no platforms are configured.
+func loadJSONPlatformStates(cfg *Config) (*AppState, error) {
 	if len(cfg.Platforms) == 0 {
 		return LoadState(cfg.StateFile)
 	}
@@ -173,73 +172,8 @@ func LoadPlatformStates(cfg *Config) (*AppState, error) {
 	return merged, nil
 }
 
-// SavePlatformStates splits the merged AppState by platform and saves each platform's state file.
-// Falls back to cfg.StateFile for backwards compatibility when no platforms are configured.
-func SavePlatformStates(state *AppState, cfg *Config) error {
-	if len(cfg.Platforms) == 0 {
-		return SaveState(cfg.StateFile, state)
-	}
-
-	// Build per-platform AppState instances.
-	platformStates := make(map[string]*AppState)
-	for name := range cfg.Platforms {
-		platformStates[name] = &AppState{
-			CycleCount:    state.CycleCount,
-			LastCycle:     state.LastCycle,
-			Strategies:    make(map[string]*StrategyState),
-			PortfolioRisk: state.PortfolioRisk,
-		}
-	}
-
-	// Assign each strategy to its platform.
-	for id, s := range state.Strategies {
-		platform := s.Platform
-		if platform == "" {
-			platform = "binanceus"
-		}
-		if ps, ok := platformStates[platform]; ok {
-			ps.Strategies[id] = s
-		}
-	}
-
-	// Save each platform's state file.
-	for name, ps := range platformStates {
-		stateFile := cfg.Platforms[name].StateFile
-		if stateFile == "" {
-			stateFile = fmt.Sprintf("platforms/%s/state.json", name)
-		}
-		if err := SaveState(stateFile, ps); err != nil {
-			return fmt.Errorf("platform %s: %w", name, err)
-		}
-	}
-	return nil
-}
-
-func SaveState(path string, state *AppState) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create state dir: %w", err)
-	}
-
-	// Trim trade history to prevent unbounded growth
-	for _, s := range state.Strategies {
-		if len(s.TradeHistory) > maxTradeHistory {
-			s.TradeHistory = s.TradeHistory[len(s.TradeHistory)-maxTradeHistory:]
-		}
-	}
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal state: %w", err)
-	}
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return fmt.Errorf("write state: %w", err)
-	}
-	return os.Rename(tmpPath, path)
-}
-
-// LoadStateWithDB loads state from SQLite first, falling back to JSON with auto-migration.
+// LoadStateWithDB loads state from SQLite. If SQLite is empty, attempts one-time
+// migration from legacy JSON state files.
 func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 	state, err := sdb.LoadState()
 	if err != nil {
@@ -250,8 +184,8 @@ func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 		return state, nil
 	}
 
-	// SQLite empty — fall back to JSON.
-	state, err = LoadPlatformStates(cfg)
+	// SQLite empty — try legacy JSON migration.
+	state, err = loadJSONPlatformStates(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -260,24 +194,14 @@ func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 	if state.CycleCount > 0 || len(state.Strategies) > 0 {
 		fmt.Println("[state] Migrating JSON → SQLite (one-time)")
 		if err := sdb.SaveState(state); err != nil {
-			fmt.Printf("[WARN] SQLite migration failed: %v — continuing with JSON\n", err)
+			fmt.Printf("[WARN] SQLite migration failed: %v\n", err)
 		}
 	}
 
 	return state, nil
 }
 
-// SaveStateWithDB saves state to SQLite (primary) then JSON (dual-write for rollback safety).
+// SaveStateWithDB saves state to SQLite.
 func SaveStateWithDB(state *AppState, cfg *Config, sdb *StateDB) error {
-	if err := sdb.SaveState(state); err != nil {
-		fmt.Printf("[WARN] SQLite save failed: %v — falling back to JSON only\n", err)
-		return SavePlatformStates(state, cfg)
-	}
-
-	// JSON dual-write for rollback safety.
-	if err := SavePlatformStates(state, cfg); err != nil {
-		fmt.Printf("[WARN] JSON dual-write failed: %v — SQLite save succeeded\n", err)
-		// Not fatal since SQLite succeeded.
-	}
-	return nil
+	return sdb.SaveState(state)
 }
