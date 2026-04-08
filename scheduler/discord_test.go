@@ -339,6 +339,33 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	}
 }
 
+func TestFormatCategorySummary_WalletPctFromConfig(t *testing.T) {
+	// Wallet% should reflect capital_pct from config, not dynamic share.
+	// capital_pct is 0.3 and 0.7, but actual capitals are equal ($500 each).
+	// Old behavior: walletPct = 500/1000 * 100 = 50.0% each (wrong).
+	// New behavior: walletPct = 0.3*100=30.0% and 0.7*100=70.0% (correct).
+	strats := []StrategyConfig{
+		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.3, Args: []string{"rmc", "ETH", "1h"}},
+		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.7, Args: []string{"tema", "ETH", "1h"}},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rmc-eth":  {Cash: 1000},
+			"hl-tema-eth": {Cash: 1000},
+		},
+	}
+	prices := map[string]float64{"ETH/USDT": 3000}
+
+	msg := FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "hyperliquid", "ETH")
+
+	if !strings.Contains(msg, "30.0%") {
+		t.Errorf("expected '30.0%%' from capital_pct=0.3, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "70.0%") {
+		t.Errorf("expected '70.0%%' from capital_pct=0.7, got:\n%s", msg)
+	}
+}
+
 func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
 	// Strategies without capital_pct should not show Wallet% column.
 	strats := []StrategyConfig{

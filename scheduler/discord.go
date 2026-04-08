@@ -327,7 +327,7 @@ func FormatCategorySummary(
 		if sc.CapitalPct > 0 && walletCount[sc.Platform] > 1 {
 			total := walletCapital[sc.Platform]
 			if total > 0 {
-				walletPct = (sc.Capital / total) * 100
+				walletPct = sc.CapitalPct * 100
 				pv = pv * (sc.Capital / total)
 			}
 		}
