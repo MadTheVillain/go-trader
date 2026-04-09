@@ -753,10 +753,11 @@ func main() {
 					msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "")
 					notifier.SendToChannel(chKey, chKey, msg)
 				} else {
-					// Multiple assets → one message per asset.
+					// Multiple assets → one message per asset, routed to the platform channel.
+					platformChKey := chKey // preserve platform channel key before asset loop reassigns chKey
 					for _, asset := range assetKeys {
 						assetStrats := assetGroups[asset]
-						assetDetails := channelTradeDetails[chKey+"|"+asset]
+						assetDetails := channelTradeDetails[platformChKey+"|"+asset]
 						assetValue := 0.0
 						for _, sc := range assetStrats {
 							if s, ok := state.Strategies[sc.ID]; ok {
@@ -764,8 +765,8 @@ func main() {
 							}
 						}
 						assetTrades := len(assetDetails)
-						msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset)
-						notifier.SendToChannel(chKey, chKey, msg)
+						msg := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, platformChKey, asset)
+						notifier.SendToChannel(platformChKey, platformChKey, msg)
 					}
 				}
 			}
