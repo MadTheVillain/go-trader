@@ -59,6 +59,7 @@ def test_short_data_no_crash():
     result = donchian_breakout_core(df)
     assert "signal" in result.columns
     assert len(result) == 5
+    assert (result["signal"] == 0).all(), "Short data should produce no signals"
 
 
 def test_signal_values_valid():
@@ -91,8 +92,11 @@ def test_no_lookahead_bias():
 
 
 def test_channels_exposed():
-    """Output should include donchian_upper and donchian_lower columns."""
+    """Output should include donchian_upper, donchian_lower, and exit channel columns."""
     df = make_ohlcv([100] * 30)
     result = donchian_breakout_core(df)
     assert "donchian_upper" in result.columns
     assert "donchian_lower" in result.columns
+    assert "donchian_exit_upper" in result.columns
+    assert "donchian_exit_lower" in result.columns
+    assert (result["signal"] == 0).all(), "Flat data should produce no breakout signals"

@@ -27,14 +27,17 @@ def donchian_breakout_core(
     ----------
     df : DataFrame with open, high, low, close columns
     entry_period : lookback for upper/lower channel (highest high / lowest low)
-    exit_period : tighter channel for exits (columns exposed, not used for signals)
+    exit_period : tighter channel for exits (columns exposed for downstream use,
+                  not used for signal generation)
 
     Returns
     -------
     DataFrame with added columns:
-        signal         : 1 (buy), -1 (sell), 0 (hold)
-        donchian_upper : upper channel (shifted to avoid lookahead)
-        donchian_lower : lower channel (shifted to avoid lookahead)
+        signal              : 1 (buy), -1 (sell), 0 (hold)
+        donchian_upper      : entry upper channel (shifted to avoid lookahead)
+        donchian_lower      : entry lower channel (shifted to avoid lookahead)
+        donchian_exit_upper : exit upper channel (shifted to avoid lookahead)
+        donchian_exit_lower : exit lower channel (shifted to avoid lookahead)
     """
     result = df.copy()
     result["signal"] = 0
@@ -42,11 +45,17 @@ def donchian_breakout_core(
     if len(result) < entry_period + 1:
         result["donchian_upper"] = np.nan
         result["donchian_lower"] = np.nan
+        result["donchian_exit_upper"] = np.nan
+        result["donchian_exit_lower"] = np.nan
         return result
 
     # Shift by 1 so the channel at bar i is computed from bars [i-entry_period, i-1]
     result["donchian_upper"] = result["high"].rolling(window=entry_period).max().shift(1)
     result["donchian_lower"] = result["low"].rolling(window=entry_period).min().shift(1)
+
+    # Exit channel (tighter, exposed for downstream use)
+    result["donchian_exit_upper"] = result["high"].rolling(window=exit_period).max().shift(1)
+    result["donchian_exit_lower"] = result["low"].rolling(window=exit_period).min().shift(1)
 
     close = result["close"]
     upper = result["donchian_upper"]
