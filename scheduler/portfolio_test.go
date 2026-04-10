@@ -112,7 +112,7 @@ func TestExecuteSpotSignalHold(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecuteSpotSignal(s, 0, "BTC/USDT", 60000, logger)
+	trades, err := ExecuteSpotSignal(s, 0, "BTC/USDT", 60000, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestExecuteSpotSignalBuy(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecuteSpotSignal(s, 1, "BTC/USDT", 50000, logger)
+	trades, err := ExecuteSpotSignal(s, 1, "BTC/USDT", 50000, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestExecuteSpotSignalSell(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecuteSpotSignal(s, -1, "BTC/USDT", 55000, logger)
+	trades, err := ExecuteSpotSignal(s, -1, "BTC/USDT", 55000, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestExecuteSpotSignalBuyAlreadyLong(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := ExecuteSpotSignal(s, 1, "BTC/USDT", 60000, logger)
+	trades, _ := ExecuteSpotSignal(s, 1, "BTC/USDT", 60000, 0, logger)
 	if trades != 0 {
 		t.Error("should not buy when already long")
 	}
@@ -240,7 +240,7 @@ func TestExecuteSpotSignalSellNoPosition(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := ExecuteSpotSignal(s, -1, "BTC/USDT", 60000, logger)
+	trades, _ := ExecuteSpotSignal(s, -1, "BTC/USDT", 60000, 0, logger)
 	if trades != 0 {
 		t.Error("should not sell when no position")
 	}
@@ -258,7 +258,7 @@ func TestExecuteSpotSignalInsufficientCash(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := ExecuteSpotSignal(s, 1, "BTC/USDT", 60000, logger)
+	trades, _ := ExecuteSpotSignal(s, 1, "BTC/USDT", 60000, 0, logger)
 	if trades != 0 {
 		t.Error("should not buy with insufficient cash")
 	}
@@ -276,7 +276,7 @@ func TestExecuteSpotSignalOKXPerpsFee(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	_, err := ExecuteSpotSignal(s, 1, "BTC", 50000.0, logger)
+	_, err := ExecuteSpotSignal(s, 1, "BTC", 50000.0, 0, logger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestExecuteFuturesSignalBuy(t *testing.T) {
 	defer logger.Close()
 
 	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
-	trades, err := ExecuteFuturesSignal(s, 1, "ES", 5000, spec, 2.5, 5, logger)
+	trades, err := ExecuteFuturesSignal(s, 1, "ES", 5000, spec, 2.5, 5, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +347,7 @@ func TestExecuteFuturesSignalHold(t *testing.T) {
 	defer logger.Close()
 
 	spec := ContractSpec{Multiplier: 50, Margin: 500}
-	trades, _ := ExecuteFuturesSignal(s, 0, "ES", 5000, spec, 2.5, 5, logger)
+	trades, _ := ExecuteFuturesSignal(s, 0, "ES", 5000, spec, 2.5, 5, 0, logger)
 	if trades != 0 {
 		t.Error("should not trade on hold signal")
 	}
@@ -367,7 +367,7 @@ func TestExecuteSpotSignalSetsOwnerStrategyID(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	_, err := ExecuteSpotSignal(s, 1, "BTC", 50000, logger)
+	_, err := ExecuteSpotSignal(s, 1, "BTC", 50000, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestExecuteFuturesSignalSetsOwnerStrategyID(t *testing.T) {
 	defer logger.Close()
 
 	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
-	_, err := ExecuteFuturesSignal(s, 1, "ES", 5000, spec, 2.5, 5, logger)
+	_, err := ExecuteFuturesSignal(s, 1, "ES", 5000, spec, 2.5, 5, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestExecuteFuturesSignalShortSetsOwnerStrategyID(t *testing.T) {
 	defer logger.Close()
 
 	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
-	_, err := ExecuteFuturesSignal(s, -1, "ES", 5000, spec, 2.5, 5, logger)
+	_, err := ExecuteFuturesSignal(s, -1, "ES", 5000, spec, 2.5, 5, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,5 +439,85 @@ func TestExecuteFuturesSignalShortSetsOwnerStrategyID(t *testing.T) {
 	}
 	if pos.OwnerStrategyID != "ts-trend-es" {
 		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, "ts-trend-es")
+	}
+}
+
+func TestExecuteSpotSignalLiveFill(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-momentum-btc",
+		Cash:            1000,
+		Platform:        "hyperliquid",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	// Live fill: exchange filled 0.015 BTC at exact price 50000
+	fillQty := 0.015
+	fillPrice := 50000.0
+	trades, err := ExecuteSpotSignal(s, 1, "BTC", fillPrice, fillQty, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Errorf("trades = %d, want 1", trades)
+	}
+
+	pos := s.Positions["BTC"]
+	if pos == nil {
+		t.Fatal("should have BTC position")
+	}
+	// Quantity must be exactly the fill qty — no slippage distortion
+	if math.Abs(pos.Quantity-fillQty) > 1e-9 {
+		t.Errorf("Quantity = %.9f, want %.9f (exact fill qty)", pos.Quantity, fillQty)
+	}
+	// AvgCost must be exactly the fill price — no slippage
+	if math.Abs(pos.AvgCost-fillPrice) > 1e-6 {
+		t.Errorf("AvgCost = %.6f, want %.6f (exact fill price)", pos.AvgCost, fillPrice)
+	}
+}
+
+func TestExecuteFuturesSignalLiveFill(t *testing.T) {
+	s := &StrategyState{
+		ID:              "ts-momentum-es",
+		Cash:            10000,
+		Platform:        "topstep",
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{},
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
+	fillContracts := 2
+	fillPrice := 5000.0
+	trades, err := ExecuteFuturesSignal(s, 1, "ES", fillPrice, spec, 2.5, 5, fillContracts, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Errorf("trades = %d, want 1", trades)
+	}
+
+	pos := s.Positions["ES"]
+	if pos == nil {
+		t.Fatal("should have ES position")
+	}
+	// Contract count must be exactly the fill contracts — no slippage distortion
+	if int(pos.Quantity) != fillContracts {
+		t.Errorf("Quantity = %g, want %d (exact fill contracts)", pos.Quantity, fillContracts)
+	}
+	// AvgCost must be exactly the fill price — no slippage
+	if math.Abs(pos.AvgCost-fillPrice) > 1e-6 {
+		t.Errorf("AvgCost = %.6f, want %.6f (exact fill price)", pos.AvgCost, fillPrice)
 	}
 }

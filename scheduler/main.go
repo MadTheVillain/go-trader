@@ -1011,7 +1011,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, logger *Strategy
 
 // executeSpotResult applies a spot signal to state. Must be called under Lock.
 func executeSpotResult(sc StrategyConfig, s *StrategyState, result *SpotResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
-	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, price, logger)
+	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, price, 0, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -1288,12 +1288,14 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 // execResult is non-nil for successful live orders; nil for paper mode.
 func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
+	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
 		fillPrice = execResult.Execution.Fill.AvgPx
-		logger.Info("Live fill at $%.2f (mid was $%.2f)", fillPrice, price)
+		fillQty = execResult.Execution.Fill.TotalSz
+		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, logger)
+	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -1440,9 +1442,11 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 // executeTopStepResult applies a TopStep futures result to state. Must be called under Lock.
 func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepResult, execResult *TopStepExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
+	var fillContracts int
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
 		fillPrice = execResult.Execution.Fill.AvgPx
-		logger.Info("Live fill at $%.2f (signal was $%.2f)", fillPrice, price)
+		fillContracts = execResult.Execution.Fill.TotalContracts
+		logger.Info("Live fill at $%.2f contracts=%d (signal was $%.2f)", fillPrice, fillContracts, price)
 	}
 
 	var feePerContract float64
@@ -1452,7 +1456,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, result *TopStepRe
 		maxContracts = sc.FuturesConfig.MaxContracts
 	}
 
-	trades, err := ExecuteFuturesSignal(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, logger)
+	trades, err := ExecuteFuturesSignal(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -1582,12 +1586,14 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 // executeRobinhoodResult applies a Robinhood result to state. Must be called under Lock.
 func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
+	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
 		fillPrice = execResult.Execution.Fill.AvgPx
-		logger.Info("Live fill at $%.2f (mid was $%.2f)", fillPrice, price)
+		fillQty = execResult.Execution.Fill.Quantity
+		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, logger)
+	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -1729,12 +1735,14 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 // executeOKXResult applies an OKX result to state. Must be called under Lock.
 func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, logger *StrategyLogger) (int, string) {
 	fillPrice := price
+	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
 		fillPrice = execResult.Execution.Fill.AvgPx
-		logger.Info("Live fill at $%.2f (mid was $%.2f)", fillPrice, price)
+		fillQty = execResult.Execution.Fill.TotalSz
+		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, logger)
+	trades, err := ExecuteSpotSignal(s, result.Signal, result.Symbol, fillPrice, fillQty, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""

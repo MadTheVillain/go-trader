@@ -58,8 +58,10 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 	return total
 }
 
-// ExecuteSpotSignal processes a spot signal and executes paper trades.
-func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float64, logger *StrategyLogger) (int, error) {
+// ExecuteSpotSignal processes a spot signal and executes paper or live trades.
+// fillQty > 0 means a live fill: use price as-is (no slippage) and fillQty as position quantity for buys.
+// fillQty == 0 means paper mode: apply ApplySlippage and compute qty from state budget.
+func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float64, fillQty float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -77,7 +79,12 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 		}
 		// Close short if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
-			execPrice := ApplySlippage(price)
+			var execPrice float64
+			if fillQty > 0 {
+				execPrice = price
+			} else {
+				execPrice = ApplySlippage(price)
+			}
 			buyCost := pos.Quantity * execPrice
 			fee := CalculatePlatformSpotFee(feePlatform, buyCost)
 			totalCost := buyCost + fee
@@ -100,18 +107,23 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
 			tradesExecuted++
 		}
-		// Open long — use 95% of cash
+		// Open long — use 95% of cash (paper) or exact fill qty (live)
 		budget := s.Cash * 0.95
 		if budget < 1 {
 			logger.Info("Insufficient cash ($%.2f) to buy %s", s.Cash, symbol)
 			return tradesExecuted, nil
 		}
-		// Apply slippage
-		execPrice := ApplySlippage(price)
-		if execPrice <= 0 {
-			return tradesExecuted, nil
+		var execPrice, qty float64
+		if fillQty > 0 {
+			execPrice = price
+			qty = fillQty
+		} else {
+			execPrice = ApplySlippage(price)
+			if execPrice <= 0 {
+				return tradesExecuted, nil
+			}
+			qty = budget / execPrice
 		}
-		qty := budget / execPrice
 		tradeCost := qty * execPrice
 		fee := CalculatePlatformSpotFee(feePlatform, tradeCost)
 		s.Cash -= tradeCost + fee
@@ -142,7 +154,12 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 	} else if signal == -1 { // Sell
 		// Close long if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
-			execPrice := ApplySlippage(price)
+			var execPrice float64
+			if fillQty > 0 {
+				execPrice = price
+			} else {
+				execPrice = ApplySlippage(price)
+			}
 			saleValue := pos.Quantity * execPrice
 			fee := CalculatePlatformSpotFee(feePlatform, saleValue)
 			netProceeds := saleValue - fee
@@ -172,7 +189,9 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 }
 
 // ExecuteFuturesSignal processes a futures signal with whole-contract sizing.
-func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, logger *StrategyLogger) (int, error) {
+// fillContracts > 0 means a live fill: use price as-is (no slippage) and fillContracts as contract count for opens.
+// fillContracts == 0 means paper mode: apply ApplySlippage and compute contracts from state budget.
+func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -186,7 +205,12 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 		}
 		// Close short if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
-			execPrice := ApplySlippage(price)
+			var execPrice float64
+			if fillContracts > 0 {
+				execPrice = price
+			} else {
+				execPrice = ApplySlippage(price)
+			}
 			contracts := int(pos.Quantity)
 			pnl := float64(contracts) * multiplier * (pos.AvgCost - execPrice)
 			fee := CalculateFuturesFee(contracts, feePerContract)
@@ -215,14 +239,24 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			logger.Info("Insufficient cash ($%.2f) to buy %s futures", s.Cash, symbol)
 			return tradesExecuted, nil
 		}
-		execPrice := ApplySlippage(price)
+		var execPrice float64
+		var contracts int
 		marginPerContract := spec.Margin
-		if marginPerContract <= 0 {
-			marginPerContract = execPrice * multiplier // fallback if margin not set
-		}
-		contracts := int(budget / marginPerContract)
-		if maxContracts > 0 && contracts > maxContracts {
-			contracts = maxContracts
+		if fillContracts > 0 {
+			execPrice = price
+			contracts = fillContracts
+			if marginPerContract <= 0 {
+				marginPerContract = price * multiplier
+			}
+		} else {
+			execPrice = ApplySlippage(price)
+			if marginPerContract <= 0 {
+				marginPerContract = execPrice * multiplier
+			}
+			contracts = int(budget / marginPerContract)
+			if maxContracts > 0 && contracts > maxContracts {
+				contracts = maxContracts
+			}
 		}
 		if contracts < 1 {
 			logger.Info("Insufficient cash ($%.2f) for even 1 %s contract (margin=$%.2f)", s.Cash, symbol, marginPerContract)
@@ -258,7 +292,12 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 	} else if signal == -1 { // Sell
 		// Close long if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
-			execPrice := ApplySlippage(price)
+			var execPrice float64
+			if fillContracts > 0 {
+				execPrice = price
+			} else {
+				execPrice = ApplySlippage(price)
+			}
 			contracts := int(pos.Quantity)
 			pnl := float64(contracts) * multiplier * (execPrice - pos.AvgCost)
 			fee := CalculateFuturesFee(contracts, feePerContract)
@@ -288,14 +327,24 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				logger.Info("Insufficient cash ($%.2f) to short %s futures", s.Cash, symbol)
 				return tradesExecuted, nil
 			}
-			execPrice := ApplySlippage(price)
+			var execPrice float64
+			var contracts int
 			marginPerContract := spec.Margin
-			if marginPerContract <= 0 {
-				marginPerContract = execPrice * multiplier
-			}
-			contracts := int(budget / marginPerContract)
-			if maxContracts > 0 && contracts > maxContracts {
-				contracts = maxContracts
+			if fillContracts > 0 {
+				execPrice = price
+				contracts = fillContracts
+				if marginPerContract <= 0 {
+					marginPerContract = price * multiplier
+				}
+			} else {
+				execPrice = ApplySlippage(price)
+				if marginPerContract <= 0 {
+					marginPerContract = execPrice * multiplier
+				}
+				contracts = int(budget / marginPerContract)
+				if maxContracts > 0 && contracts > maxContracts {
+					contracts = maxContracts
+				}
 			}
 			if contracts < 1 {
 				logger.Info("Insufficient cash ($%.2f) for even 1 %s short contract (margin=$%.2f)", s.Cash, symbol, marginPerContract)
