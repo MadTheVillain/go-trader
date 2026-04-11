@@ -482,6 +482,9 @@ def order_blocks_strategy(df: pd.DataFrame,
 )
 def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: float = 0.2) -> pd.DataFrame:
     result = df.copy()
+    if result.empty:
+        result["signal"] = 0
+        return result
     # Detect daily boundaries for VWAP reset
     if isinstance(result.index, pd.DatetimeIndex):
         day = result.index.date

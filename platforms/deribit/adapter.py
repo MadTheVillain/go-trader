@@ -8,7 +8,7 @@ import time
 import math
 import json
 from typing import Optional, Dict, List, Any, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 
@@ -92,7 +92,8 @@ class OptionContract:
     @property
     def dte(self) -> float:
         """Days to expiry."""
-        delta = self.expiry - datetime.utcnow()
+        now = datetime.now(timezone.utc) if self.expiry.tzinfo else datetime.utcnow()
+        delta = self.expiry - now
         return max(delta.total_seconds() / 86400, 0.0)
 
     @property
@@ -188,12 +189,14 @@ class OptionPosition:
 
     @property
     def dte(self) -> float:
-        delta = self.expiry - datetime.utcnow()
+        now = datetime.now(timezone.utc) if self.expiry.tzinfo else datetime.utcnow()
+        delta = self.expiry - now
         return max(delta.total_seconds() / 86400, 0.0)
 
     @property
     def is_expired(self) -> bool:
-        return datetime.utcnow() >= self.expiry
+        now = datetime.now(timezone.utc) if self.expiry.tzinfo else datetime.utcnow()
+        return now >= self.expiry
 
     def to_dict(self) -> dict:
         return {
