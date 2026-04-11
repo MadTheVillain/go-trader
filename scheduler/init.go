@@ -58,6 +58,7 @@ var knownShortNames = map[string]string{
 	"range_scalper":         "rs",
 	"sweep_squeeze_combo":   "ssc",
 	"adx_trend":             "adxt",
+	"donchian_breakout":     "dbo",
 }
 
 // deriveShortName returns a short abbreviation for a strategy ID.
@@ -98,6 +99,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
+	{ID: "donchian_breakout", ShortName: "dbo"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -115,6 +117,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
+	{ID: "donchian_breakout", ShortName: "dbo"},
 }
 
 var defaultFuturesStrategies = []stratDef{
@@ -134,6 +137,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "range_scalper", ShortName: "rs"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
 	{ID: "adx_trend", ShortName: "adxt"},
+	{ID: "donchian_breakout", ShortName: "dbo"},
 }
 
 // Supported CME futures symbols for the init wizard.
