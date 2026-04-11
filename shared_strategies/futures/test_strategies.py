@@ -113,13 +113,15 @@ class TestEMACrossover:
 # ─── Bollinger Bands ───────────────────────
 
 class TestBollingerBands:
-    def test_columns(self):
-        closes = make_volatile(80, amplitude=10)
+    def test_buy_signal(self):
+        # Flat → sharp dip → recovery forces price below lower band then cross back up
+        closes = list(np.full(30, 100.0)) + list(np.linspace(100, 80, 10)) + list(np.linspace(80, 105, 10))
         result = _run("bollinger_bands", closes)
         assert "bb_middle" in result.columns
         assert "bb_upper" in result.columns
         assert "bb_lower" in result.columns
         _valid_signals(result)
+        assert (result["signal"] == 1).any()
 
     def test_flat_no_signal(self):
         result = _run("bollinger_bands", make_flat(40))
@@ -129,12 +131,17 @@ class TestBollingerBands:
 # ─── Volume Weighted ──────────────────────
 
 class TestVolumeWeighted:
-    def test_columns(self):
-        closes = make_trending_up(60)
-        result = _run("volume_weighted", closes)
+    def test_buy_signal(self):
+        # Down → up crossover with volume spike at the crossover point
+        closes = list(np.linspace(120, 80, 30)) + list(np.linspace(80, 130, 30))
+        volume = [100.0] * 60
+        volume[35] = 500.0  # spike volume at the crossover bar
+        volume[36] = 500.0
+        result = _run("volume_weighted", closes, volume=volume)
         assert "price_sma" in result.columns
         assert "vol_sma" in result.columns
         _valid_signals(result)
+        assert (result["signal"] == 1).any()
 
     def test_flat_no_signal(self):
         result = _run("volume_weighted", make_flat(40))
@@ -144,13 +151,14 @@ class TestVolumeWeighted:
 # ─── Triple EMA ───────────────────────────
 
 class TestTripleEMA:
-    def test_columns(self):
+    def test_buy_signal(self):
         closes = make_trending_up(80)
         result = _run("triple_ema", closes)
         assert "ema_short" in result.columns
         assert "ema_mid" in result.columns
         assert "ema_long" in result.columns
         _valid_signals(result)
+        assert (result["signal"] == 1).any()
 
     def test_flat_no_signal(self):
         result = _run("triple_ema", make_flat(80))
@@ -160,13 +168,14 @@ class TestTripleEMA:
 # ─── RSI MACD Combo ──────────────────────
 
 class TestRSIMACDCombo:
-    def test_columns(self):
+    def test_buy_signal(self):
         closes = list(np.linspace(120, 80, 50)) + list(np.linspace(80, 140, 50))
         result = _run("rsi_macd_combo", closes)
         assert "rsi" in result.columns
         assert "macd_line" in result.columns
         assert "macd_signal_line" in result.columns
         _valid_signals(result)
+        assert (result["signal"] == 1).any() or (result["signal"] == -1).any()
 
     def test_flat_no_signal(self):
         result = _run("rsi_macd_combo", make_flat(80))
