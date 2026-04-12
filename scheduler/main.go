@@ -750,7 +750,7 @@ func main() {
 					}
 					chDetails := channelTradeDetails[detailKey]
 					chValue := channelValue[chKey]
-					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "")
+					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chValue, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds)
 					for _, msg := range msgs {
 						notifier.SendToChannel(chKey, chKey, msg)
 					}
@@ -766,7 +766,7 @@ func main() {
 							}
 						}
 						assetTrades := len(assetDetails)
-						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset)
+						msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), assetTrades, assetValue, prices, assetDetails, assetStrats, state, chKey, asset, cfg.IntervalSeconds)
 						for _, msg := range msgs {
 							notifier.SendToChannel(chKey, chKey, msg)
 						}
@@ -925,7 +925,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 	// Format and send summary using the same asset-grouping logic as the main loop.
 	assetGroups, assetKeys := groupByAsset(chStrats)
 	if len(assetKeys) <= 1 {
-		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "")
+		msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, chValue, prices, nil, chStrats, state, channelKey, "", cfg.IntervalSeconds)
 		for _, msg := range msgs {
 			notifier.SendToChannel(channelKey, channelKey, msg)
 			fmt.Println(msg)
@@ -939,7 +939,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 					assetValue += PortfolioValue(s, prices)
 				}
 			}
-			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset)
+			msgs := FormatCategorySummary(state.CycleCount, 0, 0, 0, assetValue, prices, nil, assetStrats, state, channelKey, asset, cfg.IntervalSeconds)
 			for _, msg := range msgs {
 				notifier.SendToChannel(channelKey, channelKey, msg)
 				fmt.Println(msg)

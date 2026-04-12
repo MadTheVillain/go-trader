@@ -225,6 +225,7 @@ const discordSplitThreshold = 1980
 // the position list is split across multiple messages.
 // channelStrategies is pre-filtered by the caller; channelKey is the display label.
 // asset, when non-empty, appends " — <ASSET>" to the title and filters the prices line.
+// globalIntervalSeconds is the config-level default interval used when a strategy has no per-strategy override.
 func FormatCategorySummary(
 	cycle int,
 	elapsed time.Duration,
@@ -237,6 +238,7 @@ func FormatCategorySummary(
 	state *AppState,
 	channelKey string,
 	asset string,
+	globalIntervalSeconds int,
 ) []string {
 	var sb strings.Builder
 
@@ -368,11 +370,18 @@ func FormatCategorySummary(
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-		asset := extractAsset(sc)
+		botAsset := extractAsset(sc)
+		tf := extractTimeframe(sc)
+		effectiveInterval := sc.IntervalSeconds
+		if effectiveInterval <= 0 {
+			effectiveInterval = globalIntervalSeconds
+		}
 		tableBots = append(tableBots, botInfo{
 			id:            sc.ID,
 			strategy:      stratName,
-			asset:         asset,
+			asset:         botAsset,
+			timeframe:     tf,
+			interval:      formatInterval(effectiveInterval),
 			value:         pv,
 			initialCap:    initCap,
 			pnl:           pnl,
@@ -525,6 +534,8 @@ type botInfo struct {
 	id            string
 	strategy      string
 	asset         string
+	timeframe     string // e.g. "1h" or "—" for spot/options
+	interval      string // e.g. "10m", formatted from effective interval seconds
 	value         float64
 	initialCap    float64
 	pnl           float64
@@ -560,6 +571,17 @@ func extractAsset(sc StrategyConfig) string {
 		return strings.TrimSuffix(asset, "/USDT")
 	}
 	return ""
+}
+
+// extractTimeframe returns the candle timeframe for a strategy, or "—" if none.
+// Perps and futures scripts (check_hyperliquid.py, check_topstep.py, check_robinhood.py,
+// check_okx.py) use args[2] as the timeframe (e.g. "1h").
+// Spot (check_strategy.py) and options scripts have no timeframe argument.
+func extractTimeframe(sc StrategyConfig) string {
+	if len(sc.Args) > 2 && !strings.HasPrefix(sc.Args[2], "--") {
+		return sc.Args[2]
+	}
+	return "—"
 }
 
 // assetSortKey returns a stable sort key so BTC/ETH/SOL/BNB appear first.
@@ -616,6 +638,24 @@ func fmtComma(v float64) string {
 	return string(out)
 }
 
+// formatInterval converts a duration in seconds to a short human-readable string.
+// Examples: 60 → "1m", 600 → "10m", 3600 → "1h", 86400 → "1d".
+func formatInterval(seconds int) string {
+	if seconds <= 0 {
+		return "—"
+	}
+	if seconds%86400 == 0 {
+		return fmt.Sprintf("%dd", seconds/86400)
+	}
+	if seconds%3600 == 0 {
+		return fmt.Sprintf("%dh", seconds/3600)
+	}
+	if seconds%60 == 0 {
+		return fmt.Sprintf("%dm", seconds/60)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
 // writeCatTable writes a monospace code-block table to sb.
 // When showWalletPct is true, an extra "Wallet%" column is rendered for shared-wallet strategies.
 func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, totalPnlPct float64, showWalletPct bool) {
@@ -624,8 +664,8 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 	}
 	sb.WriteString("\n```\n")
 	if showWalletPct {
-		const sep = "------------------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%"))
+		const sep = "--------------------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Wallet%", "Tf", "Int"))
 		sb.WriteString(sep + "\n")
 		var totalInit float64
 		for _, bot := range bots {
@@ -642,17 +682,17 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 				wpStr = fmt.Sprintf("%.1f%%", bot.walletPct)
 			}
 			totalInit += bot.initialCap
-			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", label, initStr, valStr, pnlStr, pctStr, wpStr))
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, wpStr, bot.timeframe, bot.interval))
 		}
 		sb.WriteString(sep + "\n")
 		totValStr := "$ " + fmtComma(totalValue)
 		totInitStr := "$ " + fmtComma(totalInit)
 		totPnlStr := fmtPnl(totalPnl)
 		totPctStr := fmtPnlPct(totalPnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%"))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %8s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "100.0%", "", ""))
 	} else {
-		const sep = "--------------------------------------------------"
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", "Strategy", "Init", "Value", "PnL", "PnL%"))
+		const sep = "-----------------------------------------------------------------"
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %5s %5s\n", "Strategy", "Init", "Value", "PnL", "PnL%", "Tf", "Int"))
 		sb.WriteString(sep + "\n")
 		var totalInit float64
 		for _, bot := range bots {
@@ -665,14 +705,14 @@ func writeCatTable(sb *strings.Builder, bots []botInfo, totalValue, totalPnl, to
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
 			totalInit += bot.initialCap
-			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", label, initStr, valStr, pnlStr, pctStr))
+			sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %5s %5s\n", label, initStr, valStr, pnlStr, pctStr, bot.timeframe, bot.interval))
 		}
 		sb.WriteString(sep + "\n")
 		totValStr := "$ " + fmtComma(totalValue)
 		totInitStr := "$ " + fmtComma(totalInit)
 		totPnlStr := fmtPnl(totalPnl)
 		totPctStr := fmtPnlPct(totalPnlPct)
-		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr))
+		sb.WriteString(fmt.Sprintf("%-12s %10s %10s %10s %7s %5s %5s\n", "TOTAL", totInitStr, totValStr, totPnlStr, totPctStr, "", ""))
 	}
 	sb.WriteString("```\n")
 }
