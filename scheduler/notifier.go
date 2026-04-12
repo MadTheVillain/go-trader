@@ -19,11 +19,12 @@ type notifierBackend struct {
 	notifier           Notifier
 	channels           map[string]string // channel map from config (keyed by platform/type)
 	ownerID            string
-	dmPaperTrades      bool // send DM on paper trade execution
-	dmLiveTrades       bool // send DM on live trade execution
-	channelPaperTrades bool // post paper trade alerts to platform channel
-	channelLiveTrades  bool // post live trade alerts to platform channel
-	plainText          bool // use plain-text formatting (no markdown)
+	leaderboardChannel string // dedicated leaderboard channel ID (optional); when set, leaderboard posts route here
+	dmPaperTrades      bool   // send DM on paper trade execution
+	dmLiveTrades       bool   // send DM on live trade execution
+	channelPaperTrades bool   // post paper trade alerts to platform channel
+	channelLiveTrades  bool   // post live trade alerts to platform channel
+	plainText          bool   // use plain-text formatting (no markdown)
 }
 
 // MultiNotifier fans out calls to all configured notification providers.
@@ -145,6 +146,36 @@ func (m *MultiNotifier) SendToChannel(platform, stratType, content string) {
 			}
 		}
 	}
+}
+
+// SendToLeaderboardChannel sends content to each backend's configured dedicated
+// leaderboard channel (set via DiscordConfig.LeaderboardChannel etc.). Backends
+// that have no leaderboard channel configured are skipped. Returns true if at
+// least one backend had a leaderboard channel set, so callers can fall back to
+// the broadcast/per-category routing when no dedicated channel exists.
+func (m *MultiNotifier) SendToLeaderboardChannel(content string) bool {
+	sent := false
+	for _, b := range m.backends {
+		if b.leaderboardChannel == "" {
+			continue
+		}
+		sent = true
+		if err := b.notifier.SendMessage(b.leaderboardChannel, content); err != nil {
+			fmt.Printf("[WARN] Notifier send to leaderboard channel %s failed: %v\n", b.leaderboardChannel, err)
+		}
+	}
+	return sent
+}
+
+// HasLeaderboardChannel returns true if any backend has a dedicated leaderboard
+// channel configured.
+func (m *MultiNotifier) HasLeaderboardChannel() bool {
+	for _, b := range m.backends {
+		if b.leaderboardChannel != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // SendToAllChannels sends content to all unique channels across all backends.

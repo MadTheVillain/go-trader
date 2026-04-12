@@ -386,6 +386,79 @@ func TestMultiNotifier_SendDM_RoutesPerBackend(t *testing.T) {
 	}
 }
 
+func TestMultiNotifier_SendToLeaderboardChannel(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		channels:           map[string]string{"spot": "ch1", "perps": "ch2"},
+		leaderboardChannel: "lb-ch",
+	})
+
+	if !mn.HasLeaderboardChannel() {
+		t.Error("expected HasLeaderboardChannel to be true")
+	}
+
+	if !mn.SendToLeaderboardChannel("top performers") {
+		t.Error("expected SendToLeaderboardChannel to return true when channel configured")
+	}
+	if len(mock.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.messages))
+	}
+	if mock.messages[0].channelID != "lb-ch" {
+		t.Errorf("expected channel lb-ch, got %s", mock.messages[0].channelID)
+	}
+	if mock.messages[0].content != "top performers" {
+		t.Errorf("expected content 'top performers', got %q", mock.messages[0].content)
+	}
+}
+
+func TestMultiNotifier_SendToLeaderboardChannel_NoneConfigured(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"spot": "ch1"},
+	})
+
+	if mn.HasLeaderboardChannel() {
+		t.Error("expected HasLeaderboardChannel to be false when none configured")
+	}
+
+	if mn.SendToLeaderboardChannel("anything") {
+		t.Error("expected SendToLeaderboardChannel to return false when no channel configured")
+	}
+	if len(mock.messages) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(mock.messages))
+	}
+}
+
+func TestMultiNotifier_SendToLeaderboardChannel_PerBackend(t *testing.T) {
+	discord := &mockNotifier{}
+	telegram := &mockNotifier{}
+
+	// Only Discord has a leaderboard channel; Telegram falls through.
+	mn := NewMultiNotifier(
+		notifierBackend{
+			notifier:           discord,
+			channels:           map[string]string{"spot": "discord-spot"},
+			leaderboardChannel: "discord-lb",
+		},
+		notifierBackend{
+			notifier: telegram,
+			channels: map[string]string{"spot": "telegram-spot"},
+		},
+	)
+
+	if !mn.SendToLeaderboardChannel("hello") {
+		t.Error("expected sent=true when at least one backend has leaderboard channel")
+	}
+	if len(discord.messages) != 1 || discord.messages[0].channelID != "discord-lb" {
+		t.Errorf("expected discord message to discord-lb, got %v", discord.messages)
+	}
+	if len(telegram.messages) != 0 {
+		t.Errorf("expected no telegram messages (no leaderboard channel), got %d", len(telegram.messages))
+	}
+}
+
 func TestMultiNotifier_SendMessage_UnknownChannel(t *testing.T) {
 	mock := &mockNotifier{}
 	mn := NewMultiNotifier(

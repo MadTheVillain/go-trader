@@ -21,6 +21,7 @@ type DiscordConfig struct {
 	ChannelLiveTrades  bool              `json:"channel_live_trades,omitempty"`  // post live trade alerts to platform channel
 	Channels           map[string]string `json:"channels"`                       // keyed by platform or type ("spot", "hyperliquid", "deribit", etc.)
 	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`    // number of entries shown in leaderboard messages (default 5)
+	LeaderboardChannel string            `json:"leaderboard_channel,omitempty"`  // dedicated Discord channel ID for leaderboard posts; when set, all leaderboards route here instead of being broadcast across platform channels
 }
 
 // TelegramConfig holds Telegram notification settings.
