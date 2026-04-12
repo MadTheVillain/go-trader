@@ -130,6 +130,16 @@ jobs:
           model: ${{ steps.resolve_model.outputs.model_id }}
           effort: high
 
+          # Allow Claude's own bot user to trigger reviews on its own PRs
+          allowed_bots: 'claude'
+
+          # Show full output in the job summary (important for code review results)
+          show_full_output: true
+
+          # Load the code-review plugin so @claude review uses structured review skill
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
