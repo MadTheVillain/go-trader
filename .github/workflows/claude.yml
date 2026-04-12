@@ -24,7 +24,6 @@ jobs:
       issues: write
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
-      workflows: write # Required for Claude to modify workflow files
     steps:
       - name: Verify @claude is an actual invocation (not in a code block or example)
         id: verify_invocation
@@ -48,6 +47,7 @@ jobs:
           esac
 
           # Strip fenced code blocks (``` ... ```) and inline code spans (` ... `)
+          # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
           STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
 
           # @claude is a real invocation only when it appears at the start of a line
