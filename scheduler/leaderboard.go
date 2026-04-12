@@ -23,8 +23,12 @@ type LeaderboardEntry struct {
 
 // LeaderboardData is the pre-computed leaderboard written to disk each cycle.
 type LeaderboardData struct {
-	Timestamp time.Time         `json:"timestamp"`
-	Messages  map[string]string `json:"messages"` // keyed by category: "spot", "perps", "options", "futures", "top10", "bottom10"
+	Timestamp time.Time `json:"timestamp"`
+	// Messages is keyed by category: "spot", "perps", "options", "futures",
+	// "top10", "bottom10". The "top10"/"bottom10" keys are retained for
+	// backwards compatibility with the on-disk leaderboard.json schema; the
+	// entry count is actually controlled by Discord.LeaderboardTopN.
+	Messages map[string]string `json:"messages"`
 }
 
 // leaderboardPath returns the path for the pre-computed leaderboard file,
@@ -128,16 +132,12 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 }
 
 // formatLeaderboardMessage formats a single category leaderboard message.
-// topN controls how many entries appear in the table (default 5 when <= 0).
+// Callers are responsible for passing a positive topN (see leaderboardTopN).
 func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int) string {
 	// Sort by PnL% descending.
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].PnLPct > entries[j].PnLPct
 	})
-
-	if topN <= 0 {
-		topN = 5
-	}
 
 	dateStr := time.Now().Format("January 2, 2006")
 
@@ -234,9 +234,6 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 		})
 	}
 
-	if topN <= 0 {
-		topN = 5
-	}
 	n := topN
 	if len(sorted) < n {
 		n = len(sorted)
@@ -296,9 +293,10 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 	return nil
 }
 
-// FormatPlatformTop10 builds a top-10 summary message for strategies on a given platform,
-// sorted by PnL% descending. Returns "" if no strategies exist for that platform.
-func FormatPlatformTop10(platform, icon, title string, cfg *Config, state *AppState, prices map[string]float64) string {
+// FormatPlatformTopN builds a top-N summary message for strategies on a given platform,
+// sorted by PnL% descending. N is controlled by Discord.LeaderboardTopN (default 5).
+// Returns "" if no strategies exist for that platform.
+func FormatPlatformTopN(platform, icon, title string, cfg *Config, state *AppState, prices map[string]float64) string {
 	var entries []LeaderboardEntry
 	for _, sc := range cfg.Strategies {
 		if sc.Platform != platform {
@@ -343,10 +341,12 @@ func FormatPlatformTop10(platform, icon, title string, cfg *Config, state *AppSt
 	return formatLeaderboardMessage(icon, title, entries[:n], false, n)
 }
 
-// FormatHyperliquidTop10 builds a top-10 summary message for hyperliquid strategies,
-// sorted by PnL% descending. Returns "" if no hyperliquid strategies exist.
-func FormatHyperliquidTop10(cfg *Config, state *AppState, prices map[string]float64) string {
-	return FormatPlatformTop10("hyperliquid", "⚡", "Hyperliquid Top 10", cfg, state, prices)
+// FormatHyperliquidTopN builds a top-N summary message for hyperliquid strategies,
+// sorted by PnL% descending. N is controlled by Discord.LeaderboardTopN (default 5).
+// Returns "" if no hyperliquid strategies exist.
+func FormatHyperliquidTopN(cfg *Config, state *AppState, prices map[string]float64) string {
+	title := fmt.Sprintf("Hyperliquid Top %d", leaderboardTopN(cfg))
+	return FormatPlatformTopN("hyperliquid", "⚡", title, cfg, state, prices)
 }
 
 // fmtSignedDollar formats a dollar value with +/- prefix.
