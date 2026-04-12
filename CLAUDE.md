@@ -54,6 +54,7 @@
 - `backtest/` — backtesting and paper trading scripts
 - `archive/` — retired/unused modules
 - `SKILL.md` — agent operations guide (setup, deploy, backtest commands)
+- `.github/workflows/claude.yml` — general-purpose `@claude` handler for PR/issue comments; handles code review, fixes, etc. — no separate review workflow needed
 
 ## Key Patterns
 - Git commands: always run from repo root, not from `scheduler/` (git add/commit fail with path errors otherwise)
