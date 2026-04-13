@@ -3,8 +3,68 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
+
+// collectPriceSymbols returns the list of symbols to fetch for portfolio
+// valuation/notional and a mirror map (position-key → fetch-key) used to
+// back-fill prices for perps positions.
+//
+// Spot positions are stored under the same key the price fetcher uses
+// (e.g. "BTC/USDT"), so they need no mirroring. Perps positions are stored
+// under the base asset only (e.g. "BTC" for Hyperliquid/OKX perps), but
+// check_price.py queries BinanceUS which requires "BTC/USDT" format. The
+// caller fetches under the normalized key and then invokes
+// mirrorPerpsPrices to populate the base-asset alias so that both
+// PortfolioNotional and PortfolioValue can resolve prices for open perps
+// positions — fixes issue #245 where perps exposure was silently dropped
+// from portfolio-notional risk checks.
+func collectPriceSymbols(strategies []StrategyConfig) (symbols []string, mirror map[string]string) {
+	set := make(map[string]bool)
+	mirror = make(map[string]string)
+	for _, sc := range strategies {
+		if len(sc.Args) < 2 {
+			continue
+		}
+		switch sc.Type {
+		case "spot":
+			set[sc.Args[1]] = true
+		case "perps":
+			baseSym := sc.Args[1]
+			fetchSym := baseSym
+			if !strings.Contains(baseSym, "/") {
+				fetchSym = baseSym + "/USDT"
+			}
+			set[fetchSym] = true
+			if fetchSym != baseSym {
+				mirror[baseSym] = fetchSym
+			}
+		}
+	}
+	symbols = make([]string, 0, len(set))
+	for s := range set {
+		symbols = append(symbols, s)
+	}
+	return symbols, mirror
+}
+
+// mirrorPerpsPrices back-fills price aliases so that fetched quotes keyed
+// under a normalized fetch symbol (e.g. "BTC/USDT") are also available
+// under the position-storage key (e.g. "BTC") used by perps state. An
+// existing price under the position key is preserved — if a strategy has
+// already published a live exchange mid via result.Symbol during the same
+// cycle, that value wins over the (possibly stale) BinanceUS spot quote.
+func mirrorPerpsPrices(prices map[string]float64, mirror map[string]string) {
+	for posKey, fetchKey := range mirror {
+		if _, exists := prices[posKey]; exists {
+			continue
+		}
+		if p, ok := prices[fetchKey]; ok && p > 0 {
+			prices[posKey] = p
+		}
+	}
+}
 
 const maxKillSwitchEvents = 50
 

@@ -13,26 +13,21 @@ import (
 type StatusServer struct {
 	state        *AppState
 	mu           *sync.RWMutex
-	statusToken  string           // if non-empty, /status requires Authorization: Bearer <token>
-	priceSymbols []string         // symbols to always fetch prices for
-	strategies   []StrategyConfig // strategy configs for initial capital lookup
-	stateDB      *StateDB         // SQLite DB for /history queries (may be nil)
+	statusToken  string            // if non-empty, /status requires Authorization: Bearer <token>
+	priceSymbols []string          // symbols to always fetch prices for
+	priceMirror  map[string]string // perps position-key → fetch-key aliases (#245)
+	strategies   []StrategyConfig  // strategy configs for initial capital lookup
+	stateDB      *StateDB          // SQLite DB for /history queries (may be nil)
 }
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
-	// Extract all traded symbols from strategy configs so prices are always fetched,
-	// even when no positions are open.
-	symbolSet := make(map[string]bool)
-	for _, sc := range strategies {
-		if sc.Type == "spot" && len(sc.Args) >= 2 {
-			symbolSet[sc.Args[1]] = true // e.g., "BTC/USDT"
-		}
-	}
-	symbols := make([]string, 0, len(symbolSet))
-	for s := range symbolSet {
-		symbols = append(symbols, s)
-	}
-	return &StatusServer{state: state, mu: mu, statusToken: statusToken, priceSymbols: symbols, strategies: strategies, stateDB: stateDB}
+	// Extract all traded symbols from strategy configs so prices are always
+	// fetched, even when no positions are open. Perps strategies key their
+	// positions under the base asset (e.g. "BTC"); collectPriceSymbols
+	// normalizes the fetch key to "BTC/USDT" and returns a mirror map so
+	// the handler can back-fill the base-asset alias after FetchPrices.
+	symbols, mirror := collectPriceSymbols(strategies)
+	return &StatusServer{state: state, mu: mu, statusToken: statusToken, priceSymbols: symbols, priceMirror: mirror, strategies: strategies, stateDB: stateDB}
 }
 
 func (ss *StatusServer) Start(port int) {
@@ -104,6 +99,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			prices = p
 		}
 	}
+	// Back-fill perps position-key aliases (#245).
+	mirrorPerpsPrices(prices, ss.priceMirror)
 
 	// Re-acquire read lock to build the response
 	ss.mu.RLock()

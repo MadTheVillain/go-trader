@@ -353,6 +353,153 @@ func TestPortfolioNotional(t *testing.T) {
 	}
 }
 
+// TestPortfolioNotional_IncludesPerps verifies that perps positions (keyed
+// by base asset, e.g. "BTC" for Hyperliquid/OKX) are included in notional
+// exposure once their fetch price has been mirrored into the position key.
+// Regression test for issue #245: perps were silently dropped from
+// PortfolioNotional because the symbolSet builder only picked up spot.
+func TestPortfolioNotional_IncludesPerps(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"hl-momentum-btc": {
+			Type: "perps",
+			Positions: map[string]*Position{
+				// Hyperliquid perps store positions under the base asset.
+				"BTC": {Symbol: "BTC", Quantity: 0.4, AvgCost: 40000.0, Side: "long"},
+			},
+			OptionPositions: make(map[string]*OptionPosition),
+		},
+		"spot-btc": {
+			Type: "spot",
+			Positions: map[string]*Position{
+				"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.1, AvgCost: 45000.0, Side: "long"},
+			},
+			OptionPositions: make(map[string]*OptionPosition),
+		},
+	}
+
+	// Simulate the mirrored prices map after collectPriceSymbols +
+	// mirrorPerpsPrices: "BTC/USDT" is the fetch key, "BTC" the alias.
+	prices := map[string]float64{
+		"BTC/USDT": 50000.0,
+		"BTC":      50000.0,
+	}
+
+	notional := PortfolioNotional(strategies, prices)
+
+	// Perps: 0.4 * 50000 = 20000
+	// Spot:  0.1 * 50000 =  5000
+	// Total: 25000
+	expected := 25000.0
+	if notional < expected-0.01 || notional > expected+0.01 {
+		t.Errorf("expected notional=%.2f; got %.2f", expected, notional)
+	}
+}
+
+// TestCollectPriceSymbols verifies that spot and perps strategies both
+// contribute to the fetch list, that perps base-asset symbols are
+// normalized to "<base>/USDT", and that the mirror map captures the
+// position-key alias for each normalized perps symbol.
+func TestCollectPriceSymbols(t *testing.T) {
+	strategies := []StrategyConfig{
+		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+		{ID: "sma-eth", Type: "spot", Platform: "binanceus", Args: []string{"sma", "ETH/USDT", "1h"}},
+		{ID: "hl-momentum-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}},
+		{ID: "okx-ema-sol-perp", Type: "perps", Platform: "okx", Args: []string{"ema", "SOL", "1h"}},
+		// Options should be ignored by the collector.
+		{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
+		// Short-arg strategies should be ignored (no symbol to fetch).
+		{ID: "short", Type: "spot", Args: []string{"sma"}},
+	}
+
+	symbols, mirror := collectPriceSymbols(strategies)
+
+	got := make(map[string]bool, len(symbols))
+	for _, s := range symbols {
+		got[s] = true
+	}
+
+	wantSymbols := []string{"BTC/USDT", "ETH/USDT", "SOL/USDT"}
+	for _, sym := range wantSymbols {
+		if !got[sym] {
+			t.Errorf("symbols missing %q; got %v", sym, symbols)
+		}
+	}
+	if len(symbols) != len(wantSymbols) {
+		t.Errorf("symbols len = %d (%v), want %d (%v)", len(symbols), symbols, len(wantSymbols), wantSymbols)
+	}
+
+	// Perps mirror: base-asset → fetch key.
+	if mirror["BTC"] != "BTC/USDT" {
+		t.Errorf("mirror[BTC] = %q, want %q", mirror["BTC"], "BTC/USDT")
+	}
+	if mirror["SOL"] != "SOL/USDT" {
+		t.Errorf("mirror[SOL] = %q, want %q", mirror["SOL"], "SOL/USDT")
+	}
+	// Spot symbols must not appear in the mirror — the fetch key is
+	// already the position key.
+	if _, ok := mirror["BTC/USDT"]; ok {
+		t.Errorf("mirror should not contain spot symbol %q", "BTC/USDT")
+	}
+	if len(mirror) != 2 {
+		t.Errorf("mirror len = %d, want 2 (got %v)", len(mirror), mirror)
+	}
+}
+
+// TestCollectPriceSymbols_PerpsAlreadyNormalized verifies that a perps
+// strategy whose args already use a slash-form symbol (hypothetical OKX
+// swap "BTC/USDT:USDT" or similar) is passed through unchanged and not
+// double-suffixed, and that no mirror entry is created (fetch key == pos
+// key).
+func TestCollectPriceSymbols_PerpsAlreadyNormalized(t *testing.T) {
+	strategies := []StrategyConfig{
+		{ID: "okx-btc-swap", Type: "perps", Platform: "okx", Args: []string{"sma", "BTC/USDT", "1h"}},
+	}
+
+	symbols, mirror := collectPriceSymbols(strategies)
+
+	if len(symbols) != 1 || symbols[0] != "BTC/USDT" {
+		t.Errorf("symbols = %v, want [BTC/USDT]", symbols)
+	}
+	if len(mirror) != 0 {
+		t.Errorf("mirror = %v, want empty (fetch key already matches pos key)", mirror)
+	}
+}
+
+// TestMirrorPerpsPrices verifies that mirrorPerpsPrices back-fills the
+// position-key alias from its fetch key, preserves an existing position-key
+// entry (so a live exchange mid published by the strategy run wins over a
+// stale BinanceUS quote), and skips missing/zero fetch prices.
+func TestMirrorPerpsPrices(t *testing.T) {
+	mirror := map[string]string{
+		"BTC":  "BTC/USDT",
+		"ETH":  "ETH/USDT",
+		"SOL":  "SOL/USDT",
+		"DOGE": "DOGE/USDT",
+	}
+	prices := map[string]float64{
+		"BTC/USDT":  50000.0,
+		"ETH/USDT":  3000.0,
+		"ETH":       2999.5, // live mid already published — must be preserved
+		"SOL/USDT":  0,      // zero must not be mirrored
+		"DOGE/USDT": 0.08,
+	}
+
+	mirrorPerpsPrices(prices, mirror)
+
+	if prices["BTC"] != 50000.0 {
+		t.Errorf("prices[BTC] = %v, want 50000", prices["BTC"])
+	}
+	if prices["ETH"] != 2999.5 {
+		t.Errorf("prices[ETH] = %v, want 2999.5 (existing live mid), mirror must not overwrite", prices["ETH"])
+	}
+	if _, ok := prices["SOL"]; ok {
+		t.Errorf("prices[SOL] should not be set when fetch price is zero (got %v)", prices["SOL"])
+	}
+	if prices["DOGE"] != 0.08 {
+		t.Errorf("prices[DOGE] = %v, want 0.08", prices["DOGE"])
+	}
+}
+
 // TestCheckRisk_ConsecutiveLossesForceClose verifies that the consecutive-losses
 // circuit breaker force-closes all open positions.
 func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
