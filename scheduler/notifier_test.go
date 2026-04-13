@@ -386,6 +386,148 @@ func TestMultiNotifier_SendDM_RoutesPerBackend(t *testing.T) {
 	}
 }
 
+func TestMultiNotifier_PostLeaderboardCategory_DedicatedChannel(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		channels:           map[string]string{"spot": "spot-ch", "perps": "perps-ch"},
+		leaderboardChannel: "lb-ch",
+	})
+
+	mn.PostLeaderboardCategory("spot", "spot board")
+	if len(mock.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.messages))
+	}
+	if mock.messages[0].channelID != "lb-ch" {
+		t.Errorf("expected message on lb-ch, got %s", mock.messages[0].channelID)
+	}
+	if mock.messages[0].content != "spot board" {
+		t.Errorf("expected content 'spot board', got %q", mock.messages[0].content)
+	}
+}
+
+func TestMultiNotifier_PostLeaderboardCategory_FallbackPerCategory(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"spot": "spot-ch", "perps": "perps-ch"},
+	})
+
+	mn.PostLeaderboardCategory("perps", "perps board")
+	if len(mock.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.messages))
+	}
+	if mock.messages[0].channelID != "perps-ch" {
+		t.Errorf("expected message on perps-ch, got %s", mock.messages[0].channelID)
+	}
+}
+
+func TestMultiNotifier_PostLeaderboardCategory_PerBackend(t *testing.T) {
+	discord := &mockNotifier{}
+	telegram := &mockNotifier{}
+
+	// Only Discord has a leaderboard channel; Telegram should still receive the
+	// category message via legacy per-platform routing.
+	mn := NewMultiNotifier(
+		notifierBackend{
+			notifier:           discord,
+			channels:           map[string]string{"spot": "discord-spot"},
+			leaderboardChannel: "discord-lb",
+		},
+		notifierBackend{
+			notifier: telegram,
+			channels: map[string]string{"spot": "telegram-spot"},
+		},
+	)
+
+	mn.PostLeaderboardCategory("spot", "spot board")
+
+	if len(discord.messages) != 1 || discord.messages[0].channelID != "discord-lb" {
+		t.Errorf("expected discord message on discord-lb, got %v", discord.messages)
+	}
+	if len(telegram.messages) != 1 || telegram.messages[0].channelID != "telegram-spot" {
+		t.Errorf("expected telegram fallback to telegram-spot, got %v", telegram.messages)
+	}
+}
+
+func TestMultiNotifier_PostLeaderboardBroadcast_DedicatedChannel(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		channels:           map[string]string{"spot": "spot-ch", "perps": "perps-ch"},
+		leaderboardChannel: "lb-ch",
+	})
+
+	mn.PostLeaderboardBroadcast("top10 board")
+
+	// Should send exactly once to lb-ch (not broadcast to spot-ch + perps-ch).
+	if len(mock.messages) != 1 {
+		t.Fatalf("expected 1 message on dedicated channel, got %d: %v", len(mock.messages), mock.messages)
+	}
+	if mock.messages[0].channelID != "lb-ch" {
+		t.Errorf("expected message on lb-ch, got %s", mock.messages[0].channelID)
+	}
+}
+
+func TestMultiNotifier_PostLeaderboardBroadcast_FallbackBroadcast(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier: mock,
+		channels: map[string]string{"spot": "spot-ch", "perps": "perps-ch"},
+	})
+
+	mn.PostLeaderboardBroadcast("top10 board")
+
+	// Should broadcast to both unique channels.
+	if len(mock.messages) != 2 {
+		t.Fatalf("expected 2 broadcast messages, got %d: %v", len(mock.messages), mock.messages)
+	}
+	seen := map[string]bool{}
+	for _, m := range mock.messages {
+		seen[m.channelID] = true
+	}
+	if !seen["spot-ch"] || !seen["perps-ch"] {
+		t.Errorf("expected broadcast to spot-ch and perps-ch, got %v", seen)
+	}
+}
+
+func TestMultiNotifier_PostLeaderboardBroadcast_PerBackend(t *testing.T) {
+	discord := &mockNotifier{}
+	telegram := &mockNotifier{}
+
+	// Discord has dedicated channel; Telegram should still receive a broadcast
+	// across its own channels.
+	mn := NewMultiNotifier(
+		notifierBackend{
+			notifier:           discord,
+			channels:           map[string]string{"spot": "discord-spot", "perps": "discord-perps"},
+			leaderboardChannel: "discord-lb",
+		},
+		notifierBackend{
+			notifier: telegram,
+			channels: map[string]string{"spot": "telegram-spot", "perps": "telegram-perps"},
+		},
+	)
+
+	mn.PostLeaderboardBroadcast("top10 board")
+
+	// Discord: 1 message on lb-ch.
+	if len(discord.messages) != 1 || discord.messages[0].channelID != "discord-lb" {
+		t.Errorf("expected discord 1 message on discord-lb, got %v", discord.messages)
+	}
+	// Telegram: 2 messages, broadcast to both channels.
+	if len(telegram.messages) != 2 {
+		t.Fatalf("expected telegram 2 broadcast messages, got %d: %v", len(telegram.messages), telegram.messages)
+	}
+	seen := map[string]bool{}
+	for _, m := range telegram.messages {
+		seen[m.channelID] = true
+	}
+	if !seen["telegram-spot"] || !seen["telegram-perps"] {
+		t.Errorf("expected telegram broadcast to telegram-spot and telegram-perps, got %v", seen)
+	}
+}
+
 func TestMultiNotifier_SendMessage_UnknownChannel(t *testing.T) {
 	mock := &mockNotifier{}
 	mn := NewMultiNotifier(

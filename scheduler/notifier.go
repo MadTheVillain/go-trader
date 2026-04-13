@@ -19,11 +19,12 @@ type notifierBackend struct {
 	notifier           Notifier
 	channels           map[string]string // channel map from config (keyed by platform/type)
 	ownerID            string
-	dmPaperTrades      bool // send DM on paper trade execution
-	dmLiveTrades       bool // send DM on live trade execution
-	channelPaperTrades bool // post paper trade alerts to platform channel
-	channelLiveTrades  bool // post live trade alerts to platform channel
-	plainText          bool // use plain-text formatting (no markdown)
+	leaderboardChannel string // dedicated leaderboard channel ID (optional); when set, leaderboard posts route here
+	dmPaperTrades      bool   // send DM on paper trade execution
+	dmLiveTrades       bool   // send DM on live trade execution
+	channelPaperTrades bool   // post paper trade alerts to platform channel
+	channelLiveTrades  bool   // post live trade alerts to platform channel
+	plainText          bool   // use plain-text formatting (no markdown)
 }
 
 // MultiNotifier fans out calls to all configured notification providers.
@@ -142,6 +143,53 @@ func (m *MultiNotifier) SendToChannel(platform, stratType, content string) {
 		if ch := resolveChannel(b.channels, platform, stratType); ch != "" {
 			if err := b.notifier.SendMessage(ch, content); err != nil {
 				fmt.Printf("[WARN] Notifier send to channel failed: %v\n", err)
+			}
+		}
+	}
+}
+
+// PostLeaderboardCategory routes a per-category leaderboard message
+// (spot/perps/options/futures) on a per-backend basis. For each backend: if a
+// dedicated leaderboardChannel is configured, the message is sent there;
+// otherwise it falls back to the legacy per-platform channel routing. This
+// lets users wire up a dedicated leaderboard channel on one backend (e.g.
+// Discord) without silently dropping leaderboard posts on backends that
+// haven't been migrated yet (e.g. Telegram).
+func (m *MultiNotifier) PostLeaderboardCategory(stratType, content string) {
+	for _, b := range m.backends {
+		if b.leaderboardChannel != "" {
+			if err := b.notifier.SendMessage(b.leaderboardChannel, content); err != nil {
+				fmt.Printf("[WARN] Notifier send to leaderboard channel %s failed: %v\n", b.leaderboardChannel, err)
+			}
+			continue
+		}
+		if ch := resolveChannel(b.channels, stratType, stratType); ch != "" {
+			if err := b.notifier.SendMessage(ch, content); err != nil {
+				fmt.Printf("[WARN] Notifier send to channel failed: %v\n", err)
+			}
+		}
+	}
+}
+
+// PostLeaderboardBroadcast routes an all-time leaderboard message
+// (top10/bottom10) on a per-backend basis. For each backend: if a dedicated
+// leaderboardChannel is configured, the message is sent there once; otherwise
+// it broadcasts to all unique channels on that backend.
+func (m *MultiNotifier) PostLeaderboardBroadcast(content string) {
+	for _, b := range m.backends {
+		if b.leaderboardChannel != "" {
+			if err := b.notifier.SendMessage(b.leaderboardChannel, content); err != nil {
+				fmt.Printf("[WARN] Notifier send to leaderboard channel %s failed: %v\n", b.leaderboardChannel, err)
+			}
+			continue
+		}
+		seen := make(map[string]bool)
+		for _, ch := range b.channels {
+			if ch != "" && !seen[ch] {
+				seen[ch] = true
+				if err := b.notifier.SendMessage(ch, content); err != nil {
+					fmt.Printf("[WARN] Notifier broadcast failed: %v\n", err)
+				}
 			}
 		}
 	}

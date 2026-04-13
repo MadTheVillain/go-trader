@@ -266,6 +266,10 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 	}
 
 	// Post category messages in a fixed order with 1s delay between them.
+	// Routing is decided per-backend inside the notifier: backends with a
+	// dedicated leaderboard channel route there, others fall back to the legacy
+	// per-category / broadcast routing. This avoids silently dropping
+	// leaderboard posts on backends that don't have a leaderboard channel set.
 	order := []string{"spot", "perps", "options", "futures", "top10", "bottom10"}
 	first := true
 	for _, key := range order {
@@ -278,13 +282,11 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 		}
 		first = false
 
-		// Route to the matching channel. For category messages, use the type as
-		// the channel key. For top10/bottom10, broadcast to all channels.
 		switch key {
 		case "top10", "bottom10":
-			notifier.SendToAllChannels(msg)
+			notifier.PostLeaderboardBroadcast(msg)
 		default:
-			notifier.SendToChannel(key, key, msg)
+			notifier.PostLeaderboardCategory(key, msg)
 		}
 		fmt.Println(msg)
 	}

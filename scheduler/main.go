@@ -152,6 +152,7 @@ func main() {
 				notifier:           discord,
 				channels:           cfg.Discord.Channels,
 				ownerID:            cfg.Discord.OwnerID,
+				leaderboardChannel: cfg.Discord.LeaderboardChannel,
 				dmPaperTrades:      cfg.Discord.DMPaperTrades,
 				dmLiveTrades:       cfg.Discord.DMLiveTrades,
 				channelPaperTrades: cfg.Discord.ChannelPaperTrades,
