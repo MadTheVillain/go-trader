@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -494,5 +495,196 @@ func TestCheckPortfolioRisk_EventLoggedOnTrigger(t *testing.T) {
 	}
 	if prs.Events[0].PortfolioValue != 7400.0 {
 		t.Errorf("expected portfolio_value=7400; got %.2f", prs.Events[0].PortfolioValue)
+	}
+}
+
+// --- ClearLatchedKillSwitchSharedWallet (#244) ---
+
+// latchedSharedWalletState builds an AppState with a latched kill switch and
+// shared-wallet strategies for use in #244 regression tests.
+func latchedSharedWalletState() *AppState {
+	return &AppState{
+		Strategies: map[string]*StrategyState{},
+		PortfolioRisk: PortfolioRiskState{
+			PeakValue:          10000,
+			CurrentDrawdownPct: 50,
+			KillSwitchActive:   true,
+			KillSwitchAt:       time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+		},
+	}
+}
+
+func sharedHLStrategies() []StrategyConfig {
+	return []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+		{ID: "hl-b", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_Success verifies the kill switch is
+// cleared when a shared wallet's real balance is fetched successfully.
+func TestClearLatchedKillSwitchSharedWallet_Success(t *testing.T) {
+	state := latchedSharedWalletState()
+	strategies := sharedHLStrategies()
+
+	calls := 0
+	fetcher := func(platform string) (float64, error) {
+		calls++
+		if platform != "hyperliquid" {
+			t.Errorf("expected fetcher called for hyperliquid; got %q", platform)
+		}
+		return 4500, nil
+	}
+
+	cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher)
+	if !cleared {
+		t.Fatal("expected ClearLatchedKillSwitchSharedWallet to return true")
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 fetcher call; got %d", calls)
+	}
+	if state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive=false after clear")
+	}
+	if !state.PortfolioRisk.KillSwitchAt.IsZero() {
+		t.Errorf("expected KillSwitchAt zeroed; got %v", state.PortfolioRisk.KillSwitchAt)
+	}
+	if state.PortfolioRisk.WarningSent {
+		t.Error("expected WarningSent reset to false")
+	}
+	if len(state.PortfolioRisk.Events) != 1 {
+		t.Fatalf("expected 1 audit event; got %d", len(state.PortfolioRisk.Events))
+	}
+	evt := state.PortfolioRisk.Events[0]
+	if evt.Type != "auto_reset" {
+		t.Errorf("expected event type=auto_reset; got %q", evt.Type)
+	}
+	if evt.PortfolioValue != 4500 {
+		t.Errorf("expected event portfolio_value=4500 (fetched balance); got %.2f", evt.PortfolioValue)
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch verifies
+// that a network/config failure on the balance fetch leaves the kill switch
+// latched (acceptance criterion #2).
+func TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch(t *testing.T) {
+	state := latchedSharedWalletState()
+	strategies := sharedHLStrategies()
+	originalLatchedAt := state.PortfolioRisk.KillSwitchAt
+
+	fetcher := func(platform string) (float64, error) {
+		return 0, fmt.Errorf("simulated network failure")
+	}
+
+	cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher)
+	if cleared {
+		t.Fatal("expected ClearLatchedKillSwitchSharedWallet to return false on fetch failure")
+	}
+	if !state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive to remain true after fetch failure")
+	}
+	if !state.PortfolioRisk.KillSwitchAt.Equal(originalLatchedAt) {
+		t.Errorf("expected KillSwitchAt unchanged; got %v", state.PortfolioRisk.KillSwitchAt)
+	}
+	if len(state.PortfolioRisk.Events) != 0 {
+		t.Errorf("expected no audit event on failure; got %d", len(state.PortfolioRisk.Events))
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_NoSharedWalletNoOp verifies that
+// non-shared-wallet setups are unaffected (acceptance criterion #3).
+func TestClearLatchedKillSwitchSharedWallet_NoSharedWalletNoOp(t *testing.T) {
+	state := latchedSharedWalletState()
+	// Strategies without capital_pct (or only one strategy on a wallet) are
+	// not "shared" — there is no double-counting risk to recover from.
+	strategies := []StrategyConfig{
+		{ID: "spot-a", Platform: "binanceus", Capital: 1000},
+		{ID: "spot-b", Platform: "binanceus", Capital: 1000},
+		{ID: "hl-solo", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+	}
+
+	calls := 0
+	fetcher := func(platform string) (float64, error) {
+		calls++
+		return 5000, nil
+	}
+
+	cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher)
+	if cleared {
+		t.Error("expected no clear when no shared wallet detected")
+	}
+	if calls != 0 {
+		t.Errorf("expected fetcher NOT called for non-shared wallets; got %d calls", calls)
+	}
+	if !state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive to remain true")
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_InactiveSwitchNoOp verifies the
+// helper is a no-op (and skips the network fetch entirely) when the kill
+// switch is not active.
+func TestClearLatchedKillSwitchSharedWallet_InactiveSwitchNoOp(t *testing.T) {
+	state := &AppState{
+		PortfolioRisk: PortfolioRiskState{PeakValue: 10000, KillSwitchActive: false},
+	}
+	strategies := sharedHLStrategies()
+
+	calls := 0
+	fetcher := func(platform string) (float64, error) {
+		calls++
+		return 5000, nil
+	}
+
+	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); cleared {
+		t.Error("expected no clear when switch already inactive")
+	}
+	if calls != 0 {
+		t.Errorf("expected fetcher NOT called when switch inactive; got %d calls", calls)
+	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_MultiPlatformFallback verifies that
+// when one shared platform fails to fetch, a subsequent platform that
+// succeeds still clears the kill switch.
+func TestClearLatchedKillSwitchSharedWallet_MultiPlatformFallback(t *testing.T) {
+	state := latchedSharedWalletState()
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+		{ID: "hl-b", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+		{ID: "okx-a", Platform: "okx", CapitalPct: 0.3, Capital: 300},
+		{ID: "okx-b", Platform: "okx", CapitalPct: 0.7, Capital: 700},
+	}
+
+	// hyperliquid sorts before okx; fail it first, then succeed on okx.
+	fetcher := func(platform string) (float64, error) {
+		if platform == "hyperliquid" {
+			return 0, fmt.Errorf("hyperliquid unreachable")
+		}
+		return 1234, nil
+	}
+
+	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); !cleared {
+		t.Fatal("expected fallback to succeed and clear kill switch")
+	}
+	if state.PortfolioRisk.KillSwitchActive {
+		t.Error("expected KillSwitchActive=false after fallback success")
+	}
+}
+
+// TestDetectSharedWalletPlatforms verifies the shared-wallet detector picks
+// out platforms with > 1 capital_pct strategy and ignores everything else.
+func TestDetectSharedWalletPlatforms(t *testing.T) {
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5},
+		{ID: "hl-b", Platform: "hyperliquid", CapitalPct: 0.5},
+		{ID: "okx-solo", Platform: "okx", CapitalPct: 0.5},   // only one — not shared
+		{ID: "spot-a", Platform: "binanceus", Capital: 1000}, // no capital_pct
+		{ID: "spot-b", Platform: "binanceus", Capital: 1000},
+	}
+
+	got := detectSharedWalletPlatforms(strategies)
+	if len(got) != 1 || got[0] != "hyperliquid" {
+		t.Errorf("expected [hyperliquid]; got %v", got)
 	}
 }
