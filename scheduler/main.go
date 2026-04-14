@@ -316,6 +316,10 @@ func main() {
 		// asset as their position key, so we fetch under a normalized
 		// "<base>/USDT" form and mirror the result back — #245.
 		symbols, perpsMirror := collectPriceSymbols(cfg.Strategies)
+		// Futures (TopStep CME) are on a separate price rail — BinanceUS
+		// doesn't quote ES/NQ/MES/MNQ/CL, so dispatch to the TopStep
+		// adapter via fetch_futures_marks.py — #261.
+		futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
 
 		// Fetch current prices for portfolio valuation
 		prices := make(map[string]float64)
@@ -338,6 +342,24 @@ func main() {
 				fmt.Printf("[CRITICAL] All prices are zero/missing — skipping cycle\n")
 				continue
 			}
+		}
+		// Futures marks are best-effort: a failed fetch falls back to
+		// pos.AvgCost in PortfolioNotional/Value (same as pre-#261), it is
+		// NOT a hard cycle skip. Log a [WARN] so stale exposure is visible.
+		if len(futuresSymbols) > 0 {
+			marks, err := FetchFuturesMarks(futuresSymbols)
+			if err != nil {
+				fmt.Printf("[WARN] Futures marks fetch failed for %v: %v — portfolio notional will use entry cost for open futures positions\n", futuresSymbols, err)
+			} else {
+				mergeFuturesMarks(prices, marks)
+				for _, sym := range futuresSymbols {
+					if _, ok := prices[sym]; !ok {
+						fmt.Printf("[WARN] No futures mark for %s — PortfolioNotional/Value will fall back to entry cost\n", sym)
+					}
+				}
+			}
+		}
+		if len(prices) > 0 {
 			fmt.Printf("Prices: ")
 			for sym, price := range prices {
 				fmt.Printf("%s=$%.2f ", sym, price)
@@ -933,6 +955,8 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 
 	// Collect symbols that need prices (spot + perps, #245).
 	symbols, perpsMirror := collectPriceSymbols(cfg.Strategies)
+	// Futures marks live on a separate rail (#261).
+	futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
 
 	// Fetch current prices.
 	prices := make(map[string]float64)
@@ -948,6 +972,14 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 			}
 		}
 		mirrorPerpsPrices(prices, perpsMirror)
+	}
+	if len(futuresSymbols) > 0 {
+		marks, err := FetchFuturesMarks(futuresSymbols)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Futures marks fetch failed for %v: %v — summary will use entry cost\n", futuresSymbols, err)
+		} else {
+			mergeFuturesMarks(prices, marks)
+		}
 	}
 
 	// Calculate channel value.

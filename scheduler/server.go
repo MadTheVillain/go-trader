@@ -11,13 +11,14 @@ import (
 
 // StatusServer provides an HTTP endpoint for portfolio status.
 type StatusServer struct {
-	state        *AppState
-	mu           *sync.RWMutex
-	statusToken  string            // if non-empty, /status requires Authorization: Bearer <token>
-	priceSymbols []string          // symbols to always fetch prices for
-	priceMirror  map[string]string // perps position-key → fetch-key aliases (#245)
-	strategies   []StrategyConfig  // strategy configs for initial capital lookup
-	stateDB      *StateDB          // SQLite DB for /history queries (may be nil)
+	state          *AppState
+	mu             *sync.RWMutex
+	statusToken    string            // if non-empty, /status requires Authorization: Bearer <token>
+	priceSymbols   []string          // symbols to always fetch prices for
+	priceMirror    map[string]string // perps position-key → fetch-key aliases (#245)
+	futuresSymbols []string          // CME futures contracts that need TopStep marks (#261)
+	strategies     []StrategyConfig  // strategy configs for initial capital lookup
+	stateDB        *StateDB          // SQLite DB for /history queries (may be nil)
 }
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
@@ -26,8 +27,19 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 	// positions under the base asset (e.g. "BTC"); collectPriceSymbols
 	// normalizes the fetch key to "BTC/USDT" and returns a mirror map so
 	// the handler can back-fill the base-asset alias after FetchPrices.
+	// Futures positions (TopStep CME) are on a separate price rail — #261.
 	symbols, mirror := collectPriceSymbols(strategies)
-	return &StatusServer{state: state, mu: mu, statusToken: statusToken, priceSymbols: symbols, priceMirror: mirror, strategies: strategies, stateDB: stateDB}
+	futuresSymbols := collectFuturesMarkSymbols(strategies)
+	return &StatusServer{
+		state:          state,
+		mu:             mu,
+		statusToken:    statusToken,
+		priceSymbols:   symbols,
+		priceMirror:    mirror,
+		futuresSymbols: futuresSymbols,
+		strategies:     strategies,
+		stateDB:        stateDB,
+	}
 }
 
 func (ss *StatusServer) Start(port int) {
@@ -101,6 +113,14 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	// Back-fill perps position-key aliases (#245).
 	mirrorPerpsPrices(prices, ss.priceMirror)
+	// Fetch CME futures marks on their separate rail (#261). Best-effort:
+	// on error, open futures positions fall back to pos.AvgCost — same
+	// degradation behavior as the main cycle loop.
+	if len(ss.futuresSymbols) > 0 {
+		if marks, err := FetchFuturesMarks(ss.futuresSymbols); err == nil {
+			mergeFuturesMarks(prices, marks)
+		}
+	}
 
 	// Re-acquire read lock to build the response
 	ss.mu.RLock()

@@ -397,6 +397,152 @@ func TestPortfolioNotional_IncludesPerps(t *testing.T) {
 	}
 }
 
+// TestPortfolioNotional_IncludesFutures verifies that TopStep/CME futures
+// positions (Type="futures", Multiplier > 0, keyed under the bare contract
+// symbol like "ES") are revalued in notional at the live mark rather than
+// frozen at pos.AvgCost. Regression test for issue #261: before the fix,
+// collectPriceSymbols handled only spot + perps, so futures positions had
+// no entry in the prices map and PortfolioNotional fell back to AvgCost —
+// after a rally this understated exposure, after a drawdown it overstated
+// it, breaking the portfolio-notional kill switch for TopStep strategies.
+func TestPortfolioNotional_IncludesFutures(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"ts-trend-es": {
+			Type: "futures",
+			Positions: map[string]*Position{
+				// TopStep futures: 2 ES contracts long, entry 5000, multiplier 50.
+				"ES": {Symbol: "ES", Quantity: 2, AvgCost: 5000.0, Side: "long", Multiplier: 50},
+			},
+			OptionPositions: make(map[string]*OptionPosition),
+		},
+		"ts-mr-nq": {
+			Type: "futures",
+			Positions: map[string]*Position{
+				// 1 NQ contract short, entry 18000, multiplier 20.
+				"NQ": {Symbol: "NQ", Quantity: 1, AvgCost: 18000.0, Side: "short", Multiplier: 20},
+			},
+			OptionPositions: make(map[string]*OptionPosition),
+		},
+	}
+
+	// Simulate the prices map after fetch_futures_marks.py has merged
+	// live TopStep adapter quotes. Both marks diverge from entry — that
+	// is exactly what the fix unlocks for the notional computation.
+	prices := map[string]float64{
+		"ES": 5100.0,
+		"NQ": 18500.0,
+	}
+
+	notional := PortfolioNotional(strategies, prices)
+
+	// ES long: 2 * 50 * 5100 = 510000
+	// NQ short: 1 * 20 * 18500 = 370000 (absolute notional, sign-agnostic)
+	// Total:    880000
+	expected := 880000.0
+	if notional < expected-0.01 || notional > expected+0.01 {
+		t.Errorf("expected futures notional at live mark=%.2f; got %.2f", expected, notional)
+	}
+
+	// Guard the regression: the buggy pre-fix computation would have used
+	// pos.AvgCost, so assert the result is NOT equal to the frozen-entry
+	// notional (2*50*5000 + 1*20*18000 = 500000 + 360000 = 860000).
+	frozen := 860000.0
+	if notional == frozen {
+		t.Errorf("notional equals frozen-entry value %.2f — mark price was not applied", frozen)
+	}
+}
+
+// TestPortfolioNotional_FuturesMarkMiss verifies graceful degradation
+// when fetch_futures_marks.py returns no price for a symbol: the function
+// must fall back to pos.AvgCost (pre-fix behavior) rather than double-
+// counting or crashing. This is the acceptance-criteria fallback path —
+// the kill switch degrades toward stale exposure, not a cycle skip.
+func TestPortfolioNotional_FuturesMarkMiss(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"ts-trend-cl": {
+			Type: "futures",
+			Positions: map[string]*Position{
+				"CL": {Symbol: "CL", Quantity: 1, AvgCost: 80.0, Side: "long", Multiplier: 1000},
+			},
+			OptionPositions: make(map[string]*OptionPosition),
+		},
+	}
+	// Empty prices map — simulates fetch_futures_marks.py failing or
+	// omitting this symbol.
+	notional := PortfolioNotional(strategies, map[string]float64{})
+
+	// Fallback: 1 * 1000 * 80 (entry) = 80000
+	expected := 80000.0
+	if notional < expected-0.01 || notional > expected+0.01 {
+		t.Errorf("expected fallback notional=%.2f; got %.2f", expected, notional)
+	}
+}
+
+// TestCollectFuturesMarkSymbols verifies that only futures strategies
+// contribute to the CME mark fetch list and that duplicate symbols are
+// deduplicated. Spot/perps/options must NOT appear — they live on the
+// check_price.py rail, not fetch_futures_marks.py.
+func TestCollectFuturesMarkSymbols(t *testing.T) {
+	strategies := []StrategyConfig{
+		{ID: "ts-trend-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
+		{ID: "ts-mr-es", Type: "futures", Platform: "topstep", Args: []string{"mean_rev", "ES", "15m"}}, // dup symbol
+		{ID: "ts-trend-nq", Type: "futures", Platform: "topstep", Args: []string{"trend", "NQ", "1h"}},
+		{ID: "ts-trend-mes", Type: "futures", Platform: "topstep", Args: []string{"trend", "MES", "1h"}},
+		// Non-futures strategies must be ignored.
+		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+		{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h"}},
+		{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
+		// Short-arg strategy should be ignored.
+		{ID: "short", Type: "futures", Args: []string{"trend"}},
+	}
+
+	got := collectFuturesMarkSymbols(strategies)
+	want := []string{"ES", "MES", "NQ"} // sorted
+	if len(got) != len(want) {
+		t.Fatalf("got %d symbols %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i, sym := range want {
+		if got[i] != sym {
+			t.Errorf("got[%d]=%q, want %q (full: %v)", i, got[i], sym, got)
+		}
+	}
+}
+
+// TestMergeFuturesMarks verifies that mergeFuturesMarks copies non-zero
+// marks into the shared prices map, preserves existing entries (so a
+// live mark already published during the cycle wins over a fetcher
+// fallback), and skips zero/negative values.
+func TestMergeFuturesMarks(t *testing.T) {
+	prices := map[string]float64{
+		"BTC/USDT": 50000.0, // unrelated spot, must be untouched
+		"ES":       5120.5,  // strategy already published live mark — must win
+	}
+	marks := map[string]float64{
+		"ES":  5100.0, // stale, must not overwrite
+		"NQ":  18500.0,
+		"MES": 0.0, // missing/failed — must be skipped
+		"CL":  -1,  // bogus — must be skipped
+	}
+
+	mergeFuturesMarks(prices, marks)
+
+	if prices["BTC/USDT"] != 50000.0 {
+		t.Errorf("prices[BTC/USDT] = %v, want 50000 (unrelated entry mutated)", prices["BTC/USDT"])
+	}
+	if prices["ES"] != 5120.5 {
+		t.Errorf("prices[ES] = %v, want 5120.5 (existing live mark must win)", prices["ES"])
+	}
+	if prices["NQ"] != 18500.0 {
+		t.Errorf("prices[NQ] = %v, want 18500 (new mark must be merged)", prices["NQ"])
+	}
+	if _, ok := prices["MES"]; ok {
+		t.Errorf("prices[MES] should not be set when mark is zero (got %v)", prices["MES"])
+	}
+	if _, ok := prices["CL"]; ok {
+		t.Errorf("prices[CL] should not be set when mark is negative (got %v)", prices["CL"])
+	}
+}
+
 // TestPortfolioNotional_IncludesPerpsShort verifies that a perps short
 // also contributes positive exposure to notional (absolute-value
 // interpretation) and is revalued at the live mark rather than frozen at

@@ -494,3 +494,25 @@ func FetchPrices(symbols []string) (map[string]float64, error) {
 	}
 	return prices, nil
 }
+
+// FetchFuturesMarks runs fetch_futures_marks.py and returns a map of
+// contract-symbol→mark-price for CME futures (TopStep). Mirrors FetchPrices
+// but routes through the TopStep adapter (yfinance in paper mode, TopStepX
+// REST in live mode) because BinanceUS does not quote ES/NQ/MES/MNQ/CL.
+// See issue #261: without this, PortfolioNotional revalued futures positions
+// at pos.AvgCost, freezing exposure at entry cost.
+func FetchFuturesMarks(symbols []string) (map[string]float64, error) {
+	if len(symbols) == 0 {
+		return map[string]float64{}, nil
+	}
+	stdout, stderr, err := RunPythonScript("shared_scripts/fetch_futures_marks.py", symbols)
+	if err != nil {
+		return nil, fmt.Errorf("futures marks fetch error: %w (stderr: %s)", err, string(stderr))
+	}
+
+	var marks map[string]float64
+	if err := json.Unmarshal(stdout, &marks); err != nil {
+		return nil, fmt.Errorf("parse futures marks: %w (stdout: %s)", err, string(stdout))
+	}
+	return marks, nil
+}
