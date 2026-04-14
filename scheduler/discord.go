@@ -318,14 +318,15 @@ func FormatCategorySummary(
 		parts := make([]string, 0, len(syms))
 		for _, sym := range syms {
 			short := strings.TrimSuffix(sym, "/USDT")
+			priceStr := fmtComma2(displayPrices[sym])
 			if isFutures {
 				if fullName, ok := futuresFullNames[strings.ToUpper(short)]; ok {
-					parts = append(parts, fmt.Sprintf("%s (%s) $%.0f", short, fullName, displayPrices[sym]))
+					parts = append(parts, fmt.Sprintf("%s (%s): $%s", short, fullName, priceStr))
 				} else {
-					parts = append(parts, fmt.Sprintf("%s $%.0f", short, displayPrices[sym]))
+					parts = append(parts, fmt.Sprintf("%s: $%s", short, priceStr))
 				}
 			} else {
-				parts = append(parts, fmt.Sprintf("%s $%.0f", short, displayPrices[sym]))
+				parts = append(parts, fmt.Sprintf("%s: $%s", short, priceStr))
 			}
 		}
 		sb.WriteString(strings.Join(parts, " | "))
@@ -680,6 +681,30 @@ func fmtComma(v float64) string {
 	return string(out)
 }
 
+// fmtComma2 formats a float with thousands separators and two decimal places,
+// e.g. 2240.5 → "2,240.50". Negative values get a leading minus sign.
+func fmtComma2(v float64) string {
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	s := fmt.Sprintf("%.2f", v)
+	dot := strings.Index(s, ".")
+	intStr, fracStr := s[:dot], s[dot:]
+	var out []byte
+	for i := 0; i < len(intStr); i++ {
+		if i > 0 && (len(intStr)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, intStr[i])
+	}
+	result := string(out) + fracStr
+	if neg {
+		return "-" + result
+	}
+	return result
+}
+
 // formatInterval converts a duration in seconds to a short human-readable string.
 // Examples: 60 → "1m", 600 → "10m", 3600 → "1h", 86400 → "1d".
 func formatInterval(seconds int) string {
@@ -818,14 +843,16 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 			pnl = pos.Quantity * (pos.AvgCost - currentPrice)
 		}
 		sign := "+"
+		absPnl := pnl
 		if pnl < 0 {
-			sign = ""
+			sign = "-"
+			absPnl = -pnl
 		}
 		dateStr := ""
 		if !pos.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s x%g (%s$%.0f)%s", stratID, pos.Side, sym, pos.Quantity, sign, pnl, dateStr))
+		lines = append(lines, fmt.Sprintf("%s %s %s x%g @ $%s (%s$%s)%s", stratID, pos.Side, sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), dateStr))
 	}
 	for key, opt := range ss.OptionPositions {
 		dateStr := ""
