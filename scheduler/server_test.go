@@ -158,7 +158,11 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 	strategies := []StrategyConfig{
 		{Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
 		{Type: "spot", Args: []string{"rsi", "ETH/USDT", "1h"}},
-		{Type: "options", Args: []string{"vol", "BTC"}}, // not spot, skipped
+		{Type: "options", Args: []string{"vol", "BTC"}}, // options skipped
+		// #245: perps must also populate priceSymbols, normalized to "<base>/USDT",
+		// and register a mirror entry so the handler can back-fill the base-asset
+		// alias after FetchPrices returns.
+		{Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "SOL", "1h"}},
 	}
 	state := NewAppState()
 	var mu sync.RWMutex
@@ -176,8 +180,14 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 	if !symbolSet["ETH/USDT"] {
 		t.Error("ETH/USDT should be in priceSymbols")
 	}
-	if len(ss.priceSymbols) != 2 {
-		t.Errorf("priceSymbols len = %d, want 2", len(ss.priceSymbols))
+	if !symbolSet["SOL/USDT"] {
+		t.Error("SOL/USDT should be in priceSymbols (perps must be fetched — #245)")
+	}
+	if len(ss.priceSymbols) != 3 {
+		t.Errorf("priceSymbols len = %d, want 3", len(ss.priceSymbols))
+	}
+	if ss.priceMirror["SOL"] != "SOL/USDT" {
+		t.Errorf("priceMirror[SOL] = %q, want %q", ss.priceMirror["SOL"], "SOL/USDT")
 	}
 }
 

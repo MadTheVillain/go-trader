@@ -311,17 +311,11 @@ func main() {
 			cycle, cycleStart.UTC().Format("2006-01-02 15:04:05 UTC"),
 			len(dueStrategies), len(cfg.Strategies))
 
-		// Collect symbols that need prices
-		symbolSet := make(map[string]bool)
-		for _, sc := range cfg.Strategies {
-			if sc.Type == "spot" && len(sc.Args) >= 2 {
-				symbolSet[sc.Args[1]] = true
-			}
-		}
-		symbols := make([]string, 0, len(symbolSet))
-		for s := range symbolSet {
-			symbols = append(symbols, s)
-		}
+		// Collect symbols that need prices. Spot strategies use the
+		// BinanceUS-formatted symbol directly; perps strategies use the base
+		// asset as their position key, so we fetch under a normalized
+		// "<base>/USDT" form and mirror the result back — #245.
+		symbols, perpsMirror := collectPriceSymbols(cfg.Strategies)
 
 		// Fetch current prices for portfolio valuation
 		prices := make(map[string]float64)
@@ -339,6 +333,7 @@ func main() {
 					fmt.Printf("[WARN] Skipping zero price for %s\n", sym)
 				}
 			}
+			mirrorPerpsPrices(prices, perpsMirror)
 			if len(prices) == 0 {
 				fmt.Printf("[CRITICAL] All prices are zero/missing — skipping cycle\n")
 				continue
@@ -936,17 +931,8 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 		os.Exit(1)
 	}
 
-	// Collect symbols that need prices.
-	symbolSet := make(map[string]bool)
-	for _, sc := range cfg.Strategies {
-		if sc.Type == "spot" && len(sc.Args) >= 2 {
-			symbolSet[sc.Args[1]] = true
-		}
-	}
-	symbols := make([]string, 0, len(symbolSet))
-	for s := range symbolSet {
-		symbols = append(symbols, s)
-	}
+	// Collect symbols that need prices (spot + perps, #245).
+	symbols, perpsMirror := collectPriceSymbols(cfg.Strategies)
 
 	// Fetch current prices.
 	prices := make(map[string]float64)
@@ -961,6 +947,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 				prices[sym] = price
 			}
 		}
+		mirrorPerpsPrices(prices, perpsMirror)
 	}
 
 	// Calculate channel value.
