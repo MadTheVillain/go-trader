@@ -316,6 +316,10 @@ func main() {
 		// asset as their position key, so we fetch under a normalized
 		// "<base>/USDT" form and mirror the result back — #245.
 		symbols, perpsMirror := collectPriceSymbols(cfg.Strategies)
+		// Futures (TopStep CME) are on a separate price rail — BinanceUS
+		// doesn't quote ES/NQ/MES/MNQ/CL, so dispatch to the TopStep
+		// adapter via fetch_futures_marks.py — #261.
+		futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
 
 		// Fetch current prices for portfolio valuation
 		prices := make(map[string]float64)
@@ -338,6 +342,31 @@ func main() {
 				fmt.Printf("[CRITICAL] All prices are zero/missing — skipping cycle\n")
 				continue
 			}
+		}
+		// Futures marks are best-effort: a failed fetch falls back to
+		// pos.AvgCost in PortfolioNotional/Value (same as pre-#261), it is
+		// NOT a hard cycle skip. Log a [WARN] so stale exposure is visible.
+		if len(futuresSymbols) > 0 {
+			marks, mode, err := FetchFuturesMarks(futuresSymbols)
+			if err != nil {
+				fmt.Printf("[WARN] Futures marks fetch failed for %v: %v — portfolio notional will use entry cost for open futures positions\n", futuresSymbols, err)
+			} else {
+				// Main cycle loop is naturally rate-limited by the tick
+				// interval, so the paper_fallback warning can fire
+				// unthrottled here — one log per cycle on a sustained
+				// downgrade. /status uses a throttled logger instead.
+				if mode == FuturesMarkModePaperFallback {
+					fmt.Printf("[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
+				}
+				mergeFuturesMarks(prices, marks)
+				for _, sym := range futuresSymbols {
+					if _, ok := prices[sym]; !ok {
+						fmt.Printf("[WARN] No futures mark for %s — PortfolioNotional/Value will fall back to entry cost\n", sym)
+					}
+				}
+			}
+		}
+		if len(prices) > 0 {
 			fmt.Printf("Prices: ")
 			for sym, price := range prices {
 				fmt.Printf("%s=$%.2f ", sym, price)
@@ -933,6 +962,8 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 
 	// Collect symbols that need prices (spot + perps, #245).
 	symbols, perpsMirror := collectPriceSymbols(cfg.Strategies)
+	// Futures marks live on a separate rail (#261).
+	futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
 
 	// Fetch current prices.
 	prices := make(map[string]float64)
@@ -948,6 +979,18 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 			}
 		}
 		mirrorPerpsPrices(prices, perpsMirror)
+	}
+	if len(futuresSymbols) > 0 {
+		marks, mode, err := FetchFuturesMarks(futuresSymbols)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Futures marks fetch failed for %v: %v — summary will use entry cost\n", futuresSymbols, err)
+		} else {
+			// One-shot summary path — not polled, so unthrottled log is fine.
+			if mode == FuturesMarkModePaperFallback {
+				fmt.Fprintf(os.Stderr, "[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
+			}
+			mergeFuturesMarks(prices, marks)
+		}
 	}
 
 	// Calculate channel value.

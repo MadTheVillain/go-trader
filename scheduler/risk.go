@@ -80,6 +80,86 @@ func mirrorPerpsPrices(prices map[string]float64, mirror map[string]string) {
 	}
 }
 
+// collectFuturesMarkSymbols returns the list of CME futures contract
+// symbols (e.g. "ES", "NQ", "MES", "MNQ", "CL") that need live marks to
+// revalue open futures positions. Sibling to collectPriceSymbols — kept
+// separate because the price-source rail is different: check_price.py
+// queries BinanceUS which does not list CME futures, so the Go scheduler
+// has to dispatch these symbols to fetch_futures_marks.py (TopStep
+// adapter) instead.
+//
+// Futures strategies store positions under the bare contract symbol
+// (state.Positions["ES"]) with Multiplier > 0; the strategy's Args[1] is
+// the same symbol, so no normalization or alias mirroring is needed.
+// Issue #261: without this, PortfolioNotional / PortfolioValue fell back
+// to pos.AvgCost for futures, freezing exposure at entry cost.
+//
+// Platform filter: only "topstep" futures strategies are emitted.
+// fetch_futures_marks.py hardcodes TopStepExchangeAdapter, so routing a
+// non-TopStep futures symbol (e.g. a future IBKR futures adapter) through
+// this path would either fail outright or — worse — succeed against a
+// different contract on a different exchange. When a second futures
+// adapter is added, this helper should be generalized to return a
+// platform→symbols map (or similar) and fetch_futures_marks.py should
+// gain platform-aware dispatch.
+func collectFuturesMarkSymbols(strategies []StrategyConfig) []string {
+	set := make(map[string]bool)
+	for _, sc := range strategies {
+		if sc.Type != "futures" {
+			continue
+		}
+		if sc.Platform != "topstep" {
+			continue
+		}
+		if len(sc.Args) < 2 {
+			continue
+		}
+		sym := sc.Args[1]
+		if sym == "" {
+			continue
+		}
+		set[sym] = true
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	symbols := make([]string, 0, len(set))
+	for s := range set {
+		symbols = append(symbols, s)
+	}
+	sort.Strings(symbols)
+	return symbols
+}
+
+// mergeFuturesMarks copies non-zero futures mark prices into the shared
+// prices map. Existing entries win — matches mirrorPerpsPrices semantics
+// so that any live mark a strategy may have already published during the
+// cycle is not overwritten by a (possibly staler) fetch result.
+//
+// DO NOT "simplify" the skip-if-exists branch. Today the only writer
+// that could pre-populate e.g. prices["ES"] is a hypothetical futures
+// strategy publishing its own live exchange mark via result.Symbol
+// earlier in the cycle — mirrorPerpsPrices runs first but only writes
+// "/USDT"-quoted spot keys, so collisions with bare CME symbols like
+// "ES" or "NQ" are not expected in the current code paths. The guard is
+// still required: a strategy-published mark is ground truth for the
+// cycle (observed during check), whereas fetch_futures_marks is a
+// generic snapshot pulled afterwards and may be slightly stale. When
+// both exist, prefer the former. Preserving this invariant matters for
+// anyone adding strategy-level mark publishing later — removing the
+// skip would silently regress that contract.
+func mergeFuturesMarks(prices map[string]float64, marks map[string]float64) {
+	for sym, p := range marks {
+		if p <= 0 {
+			continue
+		}
+		if _, exists := prices[sym]; exists {
+			continue
+		}
+		prices[sym] = p
+	}
+}
+
 const maxKillSwitchEvents = 50
 
 // KillSwitchEvent records a kill switch lifecycle event for audit purposes.
