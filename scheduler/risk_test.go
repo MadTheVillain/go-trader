@@ -492,8 +492,20 @@ func TestCollectFuturesMarkSymbols(t *testing.T) {
 		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
 		{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h"}},
 		{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
-		// Short-arg strategy should be ignored.
-		{ID: "short", Type: "futures", Args: []string{"trend"}},
+		// Short-arg futures strategy should be ignored (early return
+		// guard at risk.go len(sc.Args) < 2).
+		{ID: "ts-short", Type: "futures", Platform: "topstep", Args: []string{"trend"}},
+		// Empty-symbol futures strategy should be ignored (early return
+		// guard at risk.go sym == "") — explicit coverage of that branch
+		// which the short-arg case above cannot reach.
+		{ID: "ts-empty-sym", Type: "futures", Platform: "topstep", Args: []string{"trend", "", "1h"}},
+		// Non-topstep futures platform must be filtered out:
+		// fetch_futures_marks.py hardcodes TopStepExchangeAdapter, so
+		// routing a hypothetical IBKR futures symbol through it would
+		// either fail outright or resolve against the wrong contract.
+		// Use a symbol distinct from the topstep entries so a filter
+		// bypass would leak "CL" into the result and fail this test.
+		{ID: "ibkr-trend-cl", Type: "futures", Platform: "ibkr", Args: []string{"trend", "CL", "1h"}},
 	}
 
 	got := collectFuturesMarkSymbols(strategies)

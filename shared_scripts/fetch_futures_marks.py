@@ -37,7 +37,10 @@ def main():
         )
         from adapter import TopStepExchangeAdapter  # type: ignore
     except Exception as e:  # noqa: BLE001
-        print(f"[fetch_futures_marks] adapter import failed: {e}", file=sys.stderr)
+        print(
+            f"[WARN][fetch_futures_marks] adapter import failed: {e}",
+            file=sys.stderr,
+        )
         traceback.print_exc(file=sys.stderr)
         print(json.dumps({}))
         sys.exit(1)
@@ -55,45 +58,61 @@ def main():
     else:
         mode = "paper"
 
+    # Track whether we had to downgrade live→paper so the caller can
+    # surface it in the cycle summary. Emitted as a reserved "_mode" key
+    # in the JSON output, alongside normal symbol→price entries.
+    effective_mode = mode
     try:
         adapter = TopStepExchangeAdapter(mode=mode)
     except Exception as e:  # noqa: BLE001
         # E.g. live mode was requested but requests is missing. Degrade to
         # paper so the scheduler still gets a mark rather than frozen entry
-        # costs on every TopStep position.
+        # costs on every TopStep position. Use [WARN] prefix so the Go
+        # scheduler's log pipeline picks this up as a warning rather than
+        # burying it in generic stderr noise.
         print(
-            f"[fetch_futures_marks] {mode} mode init failed ({e}); "
+            f"[WARN][fetch_futures_marks] {mode} mode init failed ({e}); "
             "falling back to paper",
             file=sys.stderr,
         )
         try:
             adapter = TopStepExchangeAdapter(mode="paper")
+            effective_mode = "paper_fallback"
         except Exception as e2:  # noqa: BLE001
             print(
-                f"[fetch_futures_marks] paper fallback failed: {e2}",
+                f"[WARN][fetch_futures_marks] paper fallback failed: {e2}",
                 file=sys.stderr,
             )
             print(json.dumps({}))
             sys.exit(1)
 
-    marks = {}
+    marks: dict = {}
     for symbol in symbols:
         try:
             price = adapter.get_price(symbol)
             if price and price > 0:
                 marks[symbol] = float(price)
             else:
+                # Omit symbols with no price so Go can detect misses and
+                # fall back to pos.AvgCost with a [WARN] log (same
+                # degradation as get_price exceptions below).
                 print(
-                    f"[fetch_futures_marks] no price for {symbol}",
+                    f"[WARN][fetch_futures_marks] no price for {symbol}",
                     file=sys.stderr,
                 )
         except Exception as e:  # noqa: BLE001
             print(
-                f"[fetch_futures_marks] get_price({symbol}) failed: {e}",
+                f"[WARN][fetch_futures_marks] get_price({symbol}) failed: {e}",
                 file=sys.stderr,
             )
             # Omit failed symbols so Go can detect misses.
 
+    # Attach mode metadata under a reserved "_mode" key so the Go merge
+    # layer can distinguish normal live-mode output from a silent
+    # downgrade. mergeFuturesMarks skips non-positive values, so this
+    # string key will not pollute the prices map even if downstream code
+    # naively iterates without a string-type check.
+    marks["_mode"] = effective_mode
     print(json.dumps(marks))
 
 

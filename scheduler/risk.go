@@ -93,10 +93,22 @@ func mirrorPerpsPrices(prices map[string]float64, mirror map[string]string) {
 // the same symbol, so no normalization or alias mirroring is needed.
 // Issue #261: without this, PortfolioNotional / PortfolioValue fell back
 // to pos.AvgCost for futures, freezing exposure at entry cost.
+//
+// Platform filter: only "topstep" futures strategies are emitted.
+// fetch_futures_marks.py hardcodes TopStepExchangeAdapter, so routing a
+// non-TopStep futures symbol (e.g. a future IBKR futures adapter) through
+// this path would either fail outright or — worse — succeed against a
+// different contract on a different exchange. When a second futures
+// adapter is added, this helper should be generalized to return a
+// platform→symbols map (or similar) and fetch_futures_marks.py should
+// gain platform-aware dispatch.
 func collectFuturesMarkSymbols(strategies []StrategyConfig) []string {
 	set := make(map[string]bool)
 	for _, sc := range strategies {
 		if sc.Type != "futures" {
+			continue
+		}
+		if sc.Platform != "topstep" {
 			continue
 		}
 		if len(sc.Args) < 2 {
@@ -123,6 +135,19 @@ func collectFuturesMarkSymbols(strategies []StrategyConfig) []string {
 // prices map. Existing entries win — matches mirrorPerpsPrices semantics
 // so that any live mark a strategy may have already published during the
 // cycle is not overwritten by a (possibly staler) fetch result.
+//
+// DO NOT "simplify" the skip-if-exists branch. Today the only writer
+// that could pre-populate e.g. prices["ES"] is a hypothetical futures
+// strategy publishing its own live exchange mark via result.Symbol
+// earlier in the cycle — mirrorPerpsPrices runs first but only writes
+// "/USDT"-quoted spot keys, so collisions with bare CME symbols like
+// "ES" or "NQ" are not expected in the current code paths. The guard is
+// still required: a strategy-published mark is ground truth for the
+// cycle (observed during check), whereas fetch_futures_marks is a
+// generic snapshot pulled afterwards and may be slightly stale. When
+// both exist, prefer the former. Preserving this invariant matters for
+// anyone adding strategy-level mark publishing later — removing the
+// skip would silently regress that contract.
 func mergeFuturesMarks(prices map[string]float64, marks map[string]float64) {
 	for sym, p := range marks {
 		if p <= 0 {

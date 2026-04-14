@@ -19,7 +19,22 @@ type StatusServer struct {
 	futuresSymbols []string          // CME futures contracts that need TopStep marks (#261)
 	strategies     []StrategyConfig  // strategy configs for initial capital lookup
 	stateDB        *StateDB          // SQLite DB for /history queries (may be nil)
+
+	// Throttled logging for repeated fetch_futures_marks.py failures on
+	// the /status rail. /status can be polled frequently (oncall dashboard,
+	// monitoring), so we don't want to spam logs on every hit — but
+	// silently discarding the error leaves operators blind to a broken
+	// TopStep rail. Emit the first error immediately, then at most once
+	// per futuresErrLogInterval while the failures continue.
+	futuresErrMu           sync.Mutex
+	lastFuturesErrLoggedAt time.Time
 }
+
+// futuresErrLogInterval caps how often /status logs repeated
+// fetch_futures_marks failures. Kept at 5m so a sustained outage still
+// produces a reasonable trail (every cycle summary) without drowning
+// the log on every dashboard poll.
+const futuresErrLogInterval = 5 * time.Minute
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
 	// Extract all traded symbols from strategy configs so prices are always
@@ -40,6 +55,22 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 		strategies:     strategies,
 		stateDB:        stateDB,
 	}
+}
+
+// logFuturesErrThrottled emits a [WARN] line for a fetch_futures_marks
+// failure on the /status path, skipping emission if we have already
+// logged within futuresErrLogInterval. Thread-safe — /status handlers
+// run concurrently across requests.
+func (ss *StatusServer) logFuturesErrThrottled(err error) {
+	ss.futuresErrMu.Lock()
+	defer ss.futuresErrMu.Unlock()
+	now := time.Now()
+	if !ss.lastFuturesErrLoggedAt.IsZero() && now.Sub(ss.lastFuturesErrLoggedAt) < futuresErrLogInterval {
+		return
+	}
+	ss.lastFuturesErrLoggedAt = now
+	fmt.Printf("[WARN] /status futures marks fetch failed for %v: %v — PortfolioNotional/Value will fall back to entry cost (throttled, next log in %s)\n",
+		ss.futuresSymbols, err, futuresErrLogInterval)
 }
 
 func (ss *StatusServer) Start(port int) {
@@ -115,10 +146,15 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	mirrorPerpsPrices(prices, ss.priceMirror)
 	// Fetch CME futures marks on their separate rail (#261). Best-effort:
 	// on error, open futures positions fall back to pos.AvgCost — same
-	// degradation behavior as the main cycle loop.
+	// degradation behavior as the main cycle loop. Errors are logged
+	// through a throttle so repeated /status polls don't spam the log
+	// on a sustained outage, but the first failure (and periodic
+	// reminders) are still visible.
 	if len(ss.futuresSymbols) > 0 {
 		if marks, err := FetchFuturesMarks(ss.futuresSymbols); err == nil {
 			mergeFuturesMarks(prices, marks)
+		} else {
+			ss.logFuturesErrThrottled(err)
 		}
 	}
 

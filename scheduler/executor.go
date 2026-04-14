@@ -501,6 +501,13 @@ func FetchPrices(symbols []string) (map[string]float64, error) {
 // REST in live mode) because BinanceUS does not quote ES/NQ/MES/MNQ/CL.
 // See issue #261: without this, PortfolioNotional revalued futures positions
 // at pos.AvgCost, freezing exposure at entry cost.
+//
+// The script embeds a reserved "_mode" metadata key in its JSON output
+// (one of "live", "paper", "paper_fallback"). paper_fallback indicates
+// that live-mode init failed (e.g. missing deps, network init error) and
+// the script silently degraded to yfinance paper quotes — we log a
+// [WARN] so operators aren't blind to the downgrade, since a single
+// stderr line is easy to miss on a long-running scheduler.
 func FetchFuturesMarks(symbols []string) (map[string]float64, error) {
 	if len(symbols) == 0 {
 		return map[string]float64{}, nil
@@ -510,9 +517,29 @@ func FetchFuturesMarks(symbols []string) (map[string]float64, error) {
 		return nil, fmt.Errorf("futures marks fetch error: %w (stderr: %s)", err, string(stderr))
 	}
 
-	var marks map[string]float64
-	if err := json.Unmarshal(stdout, &marks); err != nil {
+	// The script mixes float prices with a string "_mode" metadata key,
+	// so decode into interface{} first, then split into the
+	// float-keyed marks map and the mode string.
+	var raw map[string]interface{}
+	if err := json.Unmarshal(stdout, &raw); err != nil {
 		return nil, fmt.Errorf("parse futures marks: %w (stdout: %s)", err, string(stdout))
+	}
+
+	marks := make(map[string]float64, len(raw))
+	mode := ""
+	for k, v := range raw {
+		if k == "_mode" {
+			if s, ok := v.(string); ok {
+				mode = s
+			}
+			continue
+		}
+		if f, ok := v.(float64); ok {
+			marks[k] = f
+		}
+	}
+	if mode == "paper_fallback" {
+		fmt.Printf("[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
 	}
 	return marks, nil
 }
