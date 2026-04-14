@@ -661,24 +661,29 @@ func groupByAsset(strats []StrategyConfig) (map[string][]StrategyConfig, []strin
 	return groups, keys
 }
 
+// insertCommas inserts thousands separators into a non-negative integer string.
+// e.g. "1234567" -> "1,234,567". Input must contain only digits.
+func insertCommas(intStr string) string {
+	if len(intStr) <= 3 {
+		return intStr
+	}
+	var out []byte
+	for i := 0; i < len(intStr); i++ {
+		if i > 0 && (len(intStr)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, intStr[i])
+	}
+	return string(out)
+}
+
 // fmtComma formats a float as a comma-separated integer string (e.g. 1234567 -> "1,234,567").
 func fmtComma(v float64) string {
 	n := int(v)
 	if n < 0 {
-		return "-" + fmtComma(-v)
+		return "-" + insertCommas(fmt.Sprintf("%d", -n))
 	}
-	s := fmt.Sprintf("%d", n)
-	if len(s) <= 3 {
-		return s
-	}
-	var out []byte
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			out = append(out, ',')
-		}
-		out = append(out, byte(c))
-	}
-	return string(out)
+	return insertCommas(fmt.Sprintf("%d", n))
 }
 
 // fmtComma2 formats a float with thousands separators and two decimal places,
@@ -690,15 +695,7 @@ func fmtComma2(v float64) string {
 	}
 	s := fmt.Sprintf("%.2f", v)
 	dot := strings.Index(s, ".")
-	intStr, fracStr := s[:dot], s[dot:]
-	var out []byte
-	for i := 0; i < len(intStr); i++ {
-		if i > 0 && (len(intStr)-i)%3 == 0 {
-			out = append(out, ',')
-		}
-		out = append(out, intStr[i])
-	}
-	result := string(out) + fracStr
+	result := insertCommas(s[:dot]) + s[dot:]
 	if neg {
 		return "-" + result
 	}
@@ -859,7 +856,7 @@ func collectPositions(stratID string, ss *StrategyState, prices map[string]float
 		if !opt.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", opt.OpenedAt.Format("Jan 02 15:04"))
 		}
-		lines = append(lines, fmt.Sprintf("%s OPT %s ($%.0f)%s", stratID, key, opt.CurrentValueUSD, dateStr))
+		lines = append(lines, fmt.Sprintf("%s OPT %s ($%s)%s", stratID, key, fmtComma2(opt.CurrentValueUSD), dateStr))
 	}
 	return lines
 }

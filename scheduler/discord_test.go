@@ -701,6 +701,24 @@ func TestCollectPositions_OptionTimestamp(t *testing.T) {
 	}
 }
 
+// TestCollectPositions_OptionValueFormat verifies option position lines format
+// CurrentValueUSD with thousands separators and two decimal places (matching the
+// spot/perps line format), so small values like $12.34 render precisely.
+func TestCollectPositions_OptionValueFormat(t *testing.T) {
+	ss := &StrategyState{
+		OptionPositions: map[string]*OptionPosition{
+			"BTC-call-50000": {ID: "BTC-call-50000", CurrentValueUSD: 12345.67},
+		},
+	}
+	lines := collectPositions("deribit-wheel-btc", ss, nil)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "($12,345.67)") {
+		t.Errorf("expected option value '($12,345.67)' in line, got: %s", lines[0])
+	}
+}
+
 // TestCollectPositions_EntryPrice verifies issue #259: position lines include
 // the entry price (`@ $AvgCost`) alongside PnL so users can compare entry vs
 // current price at a glance.
@@ -787,6 +805,8 @@ func TestFmtComma2(t *testing.T) {
 		{1234567.89, "1,234,567.89"},
 		{-2213.08, "-2,213.08"},
 		{2240.5, "2,240.50"},
+		{-12345.67, "-12,345.67"},
+		{-1234567.89, "-1,234,567.89"},
 	}
 	for _, c := range cases {
 		if got := fmtComma2(c.in); got != c.want {
