@@ -701,6 +701,120 @@ func TestCollectPositions_OptionTimestamp(t *testing.T) {
 	}
 }
 
+// TestCollectPositions_OptionValueFormat verifies option position lines format
+// CurrentValueUSD with thousands separators and two decimal places (matching the
+// spot/perps line format), so small values like $12.34 render precisely.
+func TestCollectPositions_OptionValueFormat(t *testing.T) {
+	ss := &StrategyState{
+		OptionPositions: map[string]*OptionPosition{
+			"BTC-call-50000": {ID: "BTC-call-50000", CurrentValueUSD: 12345.67},
+		},
+	}
+	lines := collectPositions("deribit-wheel-btc", ss, nil)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "($12,345.67)") {
+		t.Errorf("expected option value '($12,345.67)' in line, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_EntryPrice verifies issue #259: position lines include
+// the entry price (`@ $AvgCost`) alongside PnL so users can compare entry vs
+// current price at a glance.
+func TestCollectPositions_EntryPrice(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH/USDT": {Symbol: "ETH/USDT", Quantity: 1.5, AvgCost: 2213.08, Side: "long"},
+		},
+	}
+	prices := map[string]float64{"ETH/USDT": 2214.88}
+
+	lines := collectPositions("hl-rsi-eth", ss, prices)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	// Entry price: 2213.08 with comma/decimal formatting.
+	if !strings.Contains(lines[0], "@ $2,213.08") {
+		t.Errorf("expected entry price '@ $2,213.08' in line, got: %s", lines[0])
+	}
+	// PnL: 1.5 * (2214.88 - 2213.08) = 2.70
+	if !strings.Contains(lines[0], "(+$2.70)") {
+		t.Errorf("expected PnL '(+$2.70)' in line, got: %s", lines[0])
+	}
+}
+
+// TestCollectPositions_ShortEntryPrice verifies entry price + PnL rendering for
+// short positions (PnL flips sign).
+func TestCollectPositions_ShortEntryPrice(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.1, AvgCost: 50000, Side: "short"},
+		},
+	}
+	prices := map[string]float64{"BTC/USDT": 51000}
+
+	lines := collectPositions("hl-rsi-btc", ss, prices)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	// Entry price formatted with comma.
+	if !strings.Contains(lines[0], "@ $50,000.00") {
+		t.Errorf("expected entry price '@ $50,000.00' in line, got: %s", lines[0])
+	}
+	// Short at 50k, price up to 51k → loss of 0.1 * 1000 = 100.
+	if !strings.Contains(lines[0], "(-$100.00)") {
+		t.Errorf("expected PnL '(-$100.00)' in line, got: %s", lines[0])
+	}
+}
+
+// TestFormatCategorySummary_HeaderPriceFormat verifies issue #259: the header
+// prices line uses `SYMBOL: $X,XXX.XX` format — colon separator, thousands
+// comma, two decimal places.
+func TestFormatCategorySummary_HeaderPriceFormat(t *testing.T) {
+	strats := []StrategyConfig{
+		{ID: "hl-rsi-eth", Type: "perps", Args: []string{"rsi", "ETH", "1h"}, Capital: 1000},
+	}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-rsi-eth": {Cash: 1000},
+		},
+	}
+	prices := map[string]float64{"ETH/USDT": 2240.5}
+
+	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600)
+	msg := strings.Join(msgs, "\n")
+	if !strings.Contains(msg, "ETH: $2,240.50") {
+		t.Errorf("expected header price 'ETH: $2,240.50', got:\n%s", msg)
+	}
+	// Old format `ETH $2240` (no colon) must be gone.
+	if strings.Contains(msg, "ETH $2240") {
+		t.Errorf("old header format 'ETH $2240' should be removed, got:\n%s", msg)
+	}
+}
+
+func TestFmtComma2(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want string
+	}{
+		{0, "0.00"},
+		{1.5, "1.50"},
+		{123.456, "123.46"},
+		{1234.5, "1,234.50"},
+		{1234567.89, "1,234,567.89"},
+		{-2213.08, "-2,213.08"},
+		{2240.5, "2,240.50"},
+		{-12345.67, "-12,345.67"},
+		{-1234567.89, "-1,234,567.89"},
+	}
+	for _, c := range cases {
+		if got := fmtComma2(c.in); got != c.want {
+			t.Errorf("fmtComma2(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestSplitCategorySummary_SingleMessage(t *testing.T) {
 	header := "Header line\n"
 	posLines := []string{"pos1", "pos2"}
