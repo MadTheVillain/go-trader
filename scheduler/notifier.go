@@ -17,13 +17,11 @@ type Notifier interface {
 // notifierBackend pairs a Notifier with its provider-specific config.
 type notifierBackend struct {
 	notifier           Notifier
-	channels           map[string]string // channel map from config (keyed by platform/type)
+	channels           map[string]string // channel map from config (keyed by platform/type; "<platform>-paper" for paper-specific)
 	ownerID            string
 	leaderboardChannel string // dedicated leaderboard channel ID (optional); when set, leaderboard posts route here
 	dmPaperTrades      bool   // send DM on paper trade execution
 	dmLiveTrades       bool   // send DM on live trade execution
-	channelPaperTrades bool   // post paper trade alerts to platform channel
-	channelLiveTrades  bool   // post live trade alerts to platform channel
 	plainText          bool   // use plain-text formatting (no markdown)
 }
 

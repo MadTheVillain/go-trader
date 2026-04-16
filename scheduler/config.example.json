@@ -70,7 +70,8 @@
     "channels": {
       "spot": "",
       "options": "",
-      "hyperliquid": ""
+      "hyperliquid": "",
+      "hyperliquid-paper": ""
     },
     "spot_summary_freq": "hourly",
     "options_summary_freq": "per_check",

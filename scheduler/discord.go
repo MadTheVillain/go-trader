@@ -158,6 +158,19 @@ func resolveChannel(channels map[string]string, platform, stratType string) stri
 	return ""
 }
 
+// resolveTradeChannel resolves the channel ID for a trade alert.
+// For paper trades: tries "<platform>-paper" first, then falls back to resolveChannel.
+// For live trades: uses resolveChannel directly (platform -> stratType).
+// Presence of a channel ID means alerts are enabled; absence means disabled.
+func resolveTradeChannel(channels map[string]string, platform, stratType string, isLive bool) string {
+	if !isLive {
+		if ch, ok := channels[platform+"-paper"]; ok && ch != "" {
+			return ch
+		}
+	}
+	return resolveChannel(channels, platform, stratType)
+}
+
 // channelKeyFromID returns the map key for a given channel ID (reverse lookup for display labels).
 func channelKeyFromID(channels map[string]string, chID string) string {
 	for k, v := range channels {

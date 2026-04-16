@@ -12,11 +12,11 @@ func TestNewFieldsSince(t *testing.T) {
 		version  int
 		minCount int // at least this many fields
 	}{
-		{0, 10},                   // all fields; update counts when adding new config versions
-		{1, 10},                   // v1 baseline, should get all v2+ fields
-		{2, 8},                    // should get v3+ fields
-		{3, 8},                    // should get v4+ fields
-		{4, 4},                    // should get v5 fields
+		{0, 6},                    // all fields; v5 channel booleans removed in v6
+		{1, 6},                    // v1 baseline, should get all v2+ fields
+		{2, 4},                    // should get v3+ fields
+		{3, 4},                    // should get v4+ fields
+		{4, 0},                    // v5 channel booleans removed — no new fields since v4
 		{CurrentConfigVersion, 0}, // no new fields
 		{999, 0},                  // future version
 	}
@@ -238,5 +238,149 @@ func TestSetNestedField(t *testing.T) {
 	deepNested := deep["nested"].(map[string]interface{})
 	if deepNested["field"] != "value3" {
 		t.Errorf("deep.nested.field = %v, want %q", deepNested["field"], "value3")
+	}
+}
+
+func TestRemoveNestedField(t *testing.T) {
+	obj := map[string]interface{}{
+		"top_level": "value1",
+		"nested": map[string]interface{}{
+			"field": "value2",
+			"keep":  "preserved",
+		},
+	}
+
+	removeNestedField(obj, "top_level")
+	if _, ok := obj["top_level"]; ok {
+		t.Error("top_level should have been removed")
+	}
+
+	removeNestedField(obj, "nested.field")
+	nested := obj["nested"].(map[string]interface{})
+	if _, ok := nested["field"]; ok {
+		t.Error("nested.field should have been removed")
+	}
+	if nested["keep"] != "preserved" {
+		t.Error("nested.keep should be preserved")
+	}
+
+	// Removing a non-existent field should be a no-op.
+	removeNestedField(obj, "nonexistent.path")
+}
+
+func TestMigrateConfigV6SkipsRemovalForCurrentVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	// Config already at v6 with fields that happen to match deprecated names
+	// should NOT have them removed (version guard).
+	original := map[string]interface{}{
+		"config_version": 6,
+		"discord": map[string]interface{}{
+			"channel_paper_trades": true,
+			"channel_live_trades":  true,
+		},
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateConfig(path, nil); err != nil {
+		t.Fatalf("MigrateConfig failed: %v", err)
+	}
+
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fields should still be present since config was already at v6.
+	discord := updated["discord"].(map[string]interface{})
+	if _, ok := discord["channel_paper_trades"]; !ok {
+		t.Error("discord.channel_paper_trades should NOT have been removed for v6+ config")
+	}
+	if _, ok := discord["channel_live_trades"]; !ok {
+		t.Error("discord.channel_live_trades should NOT have been removed for v6+ config")
+	}
+}
+
+func TestMigrateConfigV6RemovesChannelBooleans(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	original := map[string]interface{}{
+		"config_version": 5,
+		"discord": map[string]interface{}{
+			"enabled":              true,
+			"channel_paper_trades": true,
+			"channel_live_trades":  true,
+			"channels": map[string]interface{}{
+				"hyperliquid": "ch-123",
+			},
+		},
+		"telegram": map[string]interface{}{
+			"channel_paper_trades": false,
+			"channel_live_trades":  true,
+		},
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateConfig(path, nil); err != nil {
+		t.Fatalf("MigrateConfig failed: %v", err)
+	}
+
+	result, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(result, &updated); err != nil {
+		t.Fatal(err)
+	}
+
+	// Version should be bumped to 6.
+	version := int(updated["config_version"].(float64))
+	if version != CurrentConfigVersion {
+		t.Errorf("config_version = %d, want %d", version, CurrentConfigVersion)
+	}
+
+	// Channel booleans should be removed from both discord and telegram.
+	discord := updated["discord"].(map[string]interface{})
+	if _, ok := discord["channel_paper_trades"]; ok {
+		t.Error("discord.channel_paper_trades should have been removed")
+	}
+	if _, ok := discord["channel_live_trades"]; ok {
+		t.Error("discord.channel_live_trades should have been removed")
+	}
+
+	telegram := updated["telegram"].(map[string]interface{})
+	if _, ok := telegram["channel_paper_trades"]; ok {
+		t.Error("telegram.channel_paper_trades should have been removed")
+	}
+	if _, ok := telegram["channel_live_trades"]; ok {
+		t.Error("telegram.channel_live_trades should have been removed")
+	}
+
+	// Other fields should be preserved.
+	if discord["enabled"] != true {
+		t.Error("discord.enabled should be preserved")
+	}
+	channels := discord["channels"].(map[string]interface{})
+	if channels["hyperliquid"] != "ch-123" {
+		t.Error("discord.channels.hyperliquid should be preserved")
 	}
 }

@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 5
+const CurrentConfigVersion = 6
 
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
@@ -65,35 +65,20 @@ var configFieldRegistry = []ConfigField{
 		Default:     "false",
 		FieldType:   "bool",
 	},
-	{
-		Version:     5,
-		JSONPath:    "discord.channel_live_trades",
-		Description: "Post individual trade alerts to the platform's Discord channel on every live trade execution (true/false).",
-		Default:     "false",
-		FieldType:   "bool",
-	},
-	{
-		Version:     5,
-		JSONPath:    "discord.channel_paper_trades",
-		Description: "Post individual trade alerts to the platform's Discord channel on every paper trade execution (true/false).",
-		Default:     "false",
-		FieldType:   "bool",
-	},
-	{
-		Version:     5,
-		JSONPath:    "telegram.channel_live_trades",
-		Description: "Post individual trade alerts to the platform's Telegram channel on every live trade execution (true/false).",
-		Default:     "false",
-		FieldType:   "bool",
-	},
-	{
-		Version:     5,
-		JSONPath:    "telegram.channel_paper_trades",
-		Description: "Post individual trade alerts to the platform's Telegram channel on every paper trade execution (true/false).",
-		Default:     "false",
-		FieldType:   "bool",
-	},
 }
+
+// v6DeprecatedFields lists fields removed in v6 (channel boolean routing replaced by
+// <platform>-paper channel key convention). These are cleaned up during migration.
+var v6DeprecatedFields = []string{
+	"discord.channel_live_trades",
+	"discord.channel_paper_trades",
+	"telegram.channel_live_trades",
+	"telegram.channel_paper_trades",
+}
+
+const v6DeprecationNotice = "**Note:** `channel_paper_trades` and `channel_live_trades` have been removed. " +
+	"Channel trade alerts are now controlled by channel presence: add `\"<platform>-paper\"` keys to " +
+	"your channels map for paper-specific routing. See issue #247."
 
 // NewFieldsSince returns all ConfigFields added after the given version number.
 func NewFieldsSince(version int) []ConfigField {
@@ -107,7 +92,7 @@ func NewFieldsSince(version int) []ConfigField {
 }
 
 // MigrateConfig loads the config as a raw JSON map, applies fieldValues at dot-paths,
-// bumps config_version to CurrentConfigVersion, and writes back atomically.
+// removes deprecated fields, bumps config_version to CurrentConfigVersion, and writes back atomically.
 func MigrateConfig(configPath string, fieldValues map[string]string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -122,6 +107,14 @@ func MigrateConfig(configPath string, fieldValues map[string]string) error {
 	for path, value := range fieldValues {
 		setNestedField(raw, path, value)
 	}
+
+	// v6: remove deprecated channel boolean fields (replaced by <platform>-paper convention).
+	if version, ok := raw["config_version"].(float64); !ok || int(version) < 6 {
+		for _, path := range v6DeprecatedFields {
+			removeNestedField(raw, path)
+		}
+	}
+
 	raw["config_version"] = CurrentConfigVersion
 
 	newData, err := json.MarshalIndent(raw, "", "  ")
@@ -151,6 +144,20 @@ func setNestedField(obj map[string]interface{}, path string, value string) {
 	setNestedField(nested, parts[1], value)
 }
 
+// removeNestedField removes a field at a dot-path from a nested map[string]interface{}.
+func removeNestedField(obj map[string]interface{}, path string) {
+	parts := strings.SplitN(path, ".", 2)
+	if len(parts) == 1 {
+		delete(obj, parts[0])
+		return
+	}
+	nested, ok := obj[parts[0]].(map[string]interface{})
+	if !ok {
+		return
+	}
+	removeNestedField(nested, parts[1])
+}
+
 // runConfigMigrationDM prompts the owner via DM for any new config fields introduced
 // since cfg.ConfigVersion. Falls back to applying defaults silently when DM is unavailable.
 func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath string) {
@@ -160,6 +167,14 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		// Already at current version — just bump silently.
 		if err := MigrateConfig(configPath, nil); err != nil {
 			fmt.Printf("[migration] Failed to bump config version: %v\n", err)
+		}
+		// v6: notify about deprecated channel boolean removal.
+		if cfg.ConfigVersion < 6 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v6DeprecationNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v6DeprecationNotice)
+			}
 		}
 		return
 	}
@@ -176,6 +191,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if err := MigrateConfig(configPath, values); err != nil {
 			fmt.Printf("[migration] Failed to migrate config: %v\n", err)
+		}
+		if cfg.ConfigVersion < 6 {
+			fmt.Printf("[migration] %s\n", v6DeprecationNotice)
 		}
 		return
 	}
@@ -205,4 +223,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	}
 
 	notifier.SendOwnerDM("Config updated. Changes take effect next restart.")
+
+	// v6: notify about deprecated channel boolean removal.
+	if cfg.ConfigVersion < 6 {
+		notifier.SendOwnerDM(v6DeprecationNotice)
+	}
 }

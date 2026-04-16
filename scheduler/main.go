@@ -152,8 +152,6 @@ func main() {
 				leaderboardChannel: cfg.Discord.LeaderboardChannel,
 				dmPaperTrades:      cfg.Discord.DMPaperTrades,
 				dmLiveTrades:       cfg.Discord.DMLiveTrades,
-				channelPaperTrades: cfg.Discord.ChannelPaperTrades,
-				channelLiveTrades:  cfg.Discord.ChannelLiveTrades,
 			})
 			defer discord.Close()
 		}
@@ -170,14 +168,12 @@ func main() {
 			}
 			fmt.Println(")")
 			backends = append(backends, notifierBackend{
-				notifier:           tg,
-				channels:           cfg.Telegram.Channels,
-				ownerID:            cfg.Telegram.OwnerChatID,
-				dmPaperTrades:      cfg.Telegram.DMPaperTrades,
-				dmLiveTrades:       cfg.Telegram.DMLiveTrades,
-				channelPaperTrades: cfg.Telegram.ChannelPaperTrades,
-				channelLiveTrades:  cfg.Telegram.ChannelLiveTrades,
-				plainText:          true,
+				notifier:      tg,
+				channels:      cfg.Telegram.Channels,
+				ownerID:       cfg.Telegram.OwnerChatID,
+				dmPaperTrades: cfg.Telegram.DMPaperTrades,
+				dmLiveTrades:  cfg.Telegram.DMLiveTrades,
+				plainText:     true,
 			})
 			defer tg.Close()
 		}
@@ -1204,26 +1200,23 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 
 	for _, b := range notifier.backends {
 		dmEnabled := b.ownerID != "" && ((isLive && b.dmLiveTrades) || (!isLive && b.dmPaperTrades))
-		channelEnabled := (isLive && b.channelLiveTrades) || (!isLive && b.channelPaperTrades)
-		if !dmEnabled && !channelEnabled {
-			continue
-		}
 
-		ch := ""
-		if channelEnabled {
-			ch = resolveChannel(b.channels, sc.Platform, sc.Type)
-			if ch == "" {
-				fmt.Printf("[notify] channel trade alerts enabled but no channel configured for platform=%q type=%q\n", sc.Platform, sc.Type)
-			}
-		}
+		// Channel routing: presence of a channel ID means enabled, absence means disabled.
+		// Paper trades use "<platform>-paper" key with fallback to base platform key.
+		// Live trades use the base platform key.
+		ch := resolveTradeChannel(b.channels, sc.Platform, sc.Type, isLive)
 
 		// Also post live trades to a dedicated "<platform>-live" channel if configured.
 		var liveCh string
-		if isLive && channelEnabled {
+		if isLive {
 			liveCh = resolveChannel(b.channels, sc.Platform+"-live", "")
 			if liveCh == ch {
 				liveCh = "" // avoid double-posting to the same channel
 			}
+		}
+
+		if !dmEnabled && ch == "" && liveCh == "" {
+			continue
 		}
 
 		for _, t := range newTrades {
