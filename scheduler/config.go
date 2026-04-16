@@ -495,8 +495,14 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
-	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", &errs)
-	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", &errs)
+	knownPlatforms := make(map[string]bool)
+	for _, sc := range cfg.Strategies {
+		if p := strings.TrimSpace(sc.Platform); p != "" {
+			knownPlatforms[p] = true
+		}
+	}
+	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, &errs)
+	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, &errs)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
@@ -505,7 +511,9 @@ func ValidateConfig(cfg *Config) error {
 }
 
 // validateDMChannelsMap checks dm_channels keys and values (#248).
-func validateDMChannelsMap(m map[string]string, label string, errs *[]string) {
+// Keys must be "<platform>" or "<platform>-paper" with a non-empty platform prefix.
+// Unknown platforms (not present in cfg.Strategies) produce a warning log but not a validation error.
+func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map[string]bool, errs *[]string) {
 	if m == nil {
 		return
 	}
@@ -518,8 +526,17 @@ func validateDMChannelsMap(m map[string]string, label string, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (only optional suffix is \"-paper\")", label, k))
 			continue
 		}
+		platform := strings.TrimSuffix(k, "-paper")
+		if platform == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (platform prefix is empty)", label, k))
+			continue
+		}
 		if strings.TrimSpace(v) == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: dm_channels[%q] must be non-empty", label, k))
+			continue
+		}
+		if len(knownPlatforms) > 0 && !knownPlatforms[platform] {
+			fmt.Printf("[WARN] %s: dm_channels[%q] references platform %q with no configured strategies — possible typo\n", label, k, platform)
 		}
 	}
 }

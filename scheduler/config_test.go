@@ -874,3 +874,30 @@ func TestValidateConfigDMChannelsValidKeys(t *testing.T) {
 		t.Errorf("telegram dm_channels mismatch: %#v", loaded.Telegram.DMChannels)
 	}
 }
+
+func TestValidateConfigDMChannelsOrphanSuffix(t *testing.T) {
+	dir := t.TempDir()
+	cfgJSON := `{
+		"strategies": [{
+			"id": "t-spot",
+			"type": "spot",
+			"script": "shared_scripts/check_strategy.py",
+			"args": ["sma_crossover", "BTC/USDT", "1h"],
+			"capital": 1000,
+			"max_drawdown_pct": 60
+		}],
+		"discord": {
+			"enabled": false,
+			"channels": {},
+			"dm_channels": { "-paper": "123" }
+		}
+	}`
+	path := writeTestConfig(t, dir, cfgJSON)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for orphan -paper key")
+	}
+	if !strings.Contains(err.Error(), "platform prefix is empty") {
+		t.Errorf("error = %v, want mention of empty platform prefix", err)
+	}
+}

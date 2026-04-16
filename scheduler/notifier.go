@@ -269,6 +269,8 @@ func (m *MultiNotifier) AllChannelKeys() map[string]bool {
 
 // sendTradeDestination delivers a trade alert to a user ID (DM) or channel ID.
 // Discord requires UserChannelCreate for DMs, so we try SendDM first and fall back to SendMessage.
+// Logs the original SendDM error before falling back so transient DM failures on valid user IDs
+// are visible instead of being masked by a misleading "Unknown Channel" from the fallback.
 func sendTradeDestination(n Notifier, id, content string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -276,6 +278,8 @@ func sendTradeDestination(n Notifier, id, content string) error {
 	}
 	if err := n.SendDM(id, content); err == nil {
 		return nil
+	} else {
+		fmt.Printf("[notify] SendDM(%s) failed, falling back to SendMessage: %v\n", id, err)
 	}
 	return n.SendMessage(id, content)
 }

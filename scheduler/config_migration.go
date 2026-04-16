@@ -62,7 +62,10 @@ var v7DeprecatedFields = []string{
 
 const v7DeprecationNotice = "**Note:** `dm_paper_trades` and `dm_live_trades` have been replaced by a `dm_channels` map. " +
 	"Paper trades use `dm_channels[\"<platform>-paper\"]`; live trades use `dm_channels[\"<platform>\"]`. " +
-	"Absent keys disable DM-style trade alerts for that platform. See issue #248."
+	"Absent keys disable DM-style trade alerts for that platform. Values may be a user ID (delivered as a DM) " +
+	"or a channel/chat ID (delivered as a channel message) — the name \"dm_channels\" reflects the fallback behavior, " +
+	"not a restriction. Migration populates `dm_channels` only for platforms currently configured; new platforms " +
+	"added later will not auto-enroll — add an entry manually. See issue #248."
 
 // NewFieldsSince returns all ConfigFields added after the given version number.
 func NewFieldsSince(version int) []ConfigField {
@@ -181,7 +184,7 @@ func translateV7DMChannels(raw map[string]interface{}, cfg *Config) {
 			fmt.Printf("[migration] %s: dm trade booleans set but no strategies found — add dm_channels manually\n", section)
 			return
 		}
-		dm := cloneOrNewStringMap(sec["dm_channels"])
+		dm := cloneOrNewJSONMap(sec["dm_channels"])
 		for _, p := range platforms {
 			if paperB {
 				k := p + "-paper"
@@ -238,7 +241,9 @@ func stringFromJSON(v interface{}) string {
 	return strings.TrimSpace(fmt.Sprint(v))
 }
 
-func cloneOrNewStringMap(v interface{}) map[string]interface{} {
+// cloneOrNewJSONMap returns a shallow copy of v if it is a JSON object (map[string]interface{}),
+// or a fresh empty map otherwise. Values remain interface{} — this is not a string-keyed string map.
+func cloneOrNewJSONMap(v interface{}) map[string]interface{} {
 	out := make(map[string]interface{})
 	if m, ok := v.(map[string]interface{}); ok {
 		for k, val := range m {
