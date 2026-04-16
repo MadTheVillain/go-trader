@@ -243,6 +243,9 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 // scheduler has already fetched clearinghouseState earlier in the cycle (e.g.
 // for shared-wallet balance), use reconcileHyperliquidAccountPositions instead
 // to avoid a second round-trip to the HL API.
+//
+// hlStrategies must include ALL live HL strategies (not a subset) for shared-coin
+// detection to work correctly. It is passed as both dueStrategies and allStrategies.
 func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager) bool {
 	accountAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if accountAddr == "" {
@@ -256,7 +259,8 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 		return false
 	}
 
-	return reconcileHyperliquidAccountPositions(hlStrategies, state, mu, logMgr, positions)
+	// Self-contained entry: due and all are the same list.
+	return reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions)
 }
 
 // reconcileHyperliquidAccountPositions reconciles pre-fetched on-chain positions
@@ -264,35 +268,41 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 // clearinghouseState earlier in the cycle (e.g. main.go fetches once for the
 // shared-wallet balance and reuses the positions here to avoid a duplicate
 // HTTP round-trip — see #243 review feedback).
+//
+// dueStrategies are the strategies to reconcile this cycle (subset of allStrategies).
+// allStrategies includes every live HL strategy in the config — needed to detect
+// shared coins (#258) even when only some strategies are due.
+//
 // Must be called WITHOUT holding any lock; acquires Lock internally.
-func reconcileHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition) bool {
+func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition) bool {
 	mu.Lock()
 	defer mu.Unlock()
 
 	changed := false
 
-	// Build ownership index: coin → strategyID from existing state positions.
-	owned := make(map[string]string) // coin → strategy ID
-	for _, sc := range hlStrategies {
-		ss := state.Strategies[sc.ID]
-		if ss == nil {
-			continue
-		}
+	// Build coin → strategy IDs from ALL strategies (not just due) to detect
+	// shared coins. A coin is "shared" when 2+ strategies are configured to
+	// trade it on the same wallet. For shared coins, per-strategy reconciliation
+	// is skipped to prevent the phantom drawdown described in #258: one strategy
+	// selling causes the other's position to be removed by sync, collapsing its
+	// portfolio value and tripping the circuit breaker.
+	coinStrategies := make(map[string][]string)
+	for _, sc := range allStrategies {
 		sym := hyperliquidSymbol(sc.Args)
 		if sym == "" {
 			continue
 		}
-		if pos, ok := ss.Positions[sym]; ok && pos.OwnerStrategyID != "" {
-			if existing, dup := owned[sym]; dup {
-				fmt.Printf("[WARN] hl-sync: coin %s claimed by both %s and %s — skipping duplicate\n", sym, existing, sc.ID)
-				continue
-			}
-			owned[sym] = sc.ID
+		coinStrategies[sym] = append(coinStrategies[sym], sc.ID)
+	}
+	sharedCoins := make(map[string]bool)
+	for coin, ids := range coinStrategies {
+		if len(ids) > 1 {
+			sharedCoins[coin] = true
 		}
 	}
 
-	// Reconcile each strategy's position against on-chain data.
-	for _, sc := range hlStrategies {
+	// Reconcile non-shared coins normally for due strategies.
+	for _, sc := range dueStrategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
@@ -300,6 +310,9 @@ func reconcileHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *
 		sym := hyperliquidSymbol(sc.Args)
 		if sym == "" {
 			continue
+		}
+		if sharedCoins[sym] {
+			continue // handled below
 		}
 		logger, err := logMgr.GetStrategyLogger(sc.ID)
 		if err != nil {
@@ -311,9 +324,106 @@ func reconcileHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *
 		}
 	}
 
-	// Warn about unowned on-chain positions.
+	// For shared coins: apply non-destructive updates (multiplier migration,
+	// leverage sync) but do NOT modify quantities or remove positions. Compute
+	// reconciliation gaps so the user can see drift via /status.
+	now := time.Now().UTC()
+	if state.ReconciliationGaps == nil {
+		state.ReconciliationGaps = make(map[string]*ReconciliationGap)
+	}
+	for coin, stratIDs := range coinStrategies {
+		if !sharedCoins[coin] {
+			continue
+		}
+
+		// Find on-chain position for this coin.
+		var onChainPos *HLPosition
+		for i := range positions {
+			if positions[i].Coin == coin {
+				onChainPos = &positions[i]
+				break
+			}
+		}
+
+		virtualQty := 0.0
+		for _, id := range stratIDs {
+			ss := state.Strategies[id]
+			if ss == nil {
+				continue
+			}
+			pos := ss.Positions[coin]
+			if pos == nil {
+				continue
+			}
+			// Sum signed virtual qty.
+			if pos.Side == "long" {
+				virtualQty += pos.Quantity
+			} else if pos.Side == "short" {
+				virtualQty -= pos.Quantity
+			} else {
+				fmt.Printf("[WARN] hl-sync: strategy %s coin %s has unexpected side=%q, skipping in virtual qty\n", id, coin, pos.Side)
+			}
+			// Non-destructive updates applied to ALL strategies (not just due) since
+			// multiplier migration and leverage sync are idempotent corrections that
+			// should not wait for the strategy's next scheduled cycle.
+			if pos.Multiplier != 1 {
+				logger, err := logMgr.GetStrategyLogger(id)
+				if err != nil {
+					fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", id, err)
+				} else {
+					logger.Info("hl-sync: %s migrate multiplier %v → 1 (shared coin) (#254)", coin, pos.Multiplier)
+				}
+				pos.Multiplier = 1
+				changed = true
+			}
+			if onChainPos != nil && onChainPos.Leverage > 0 && pos.Leverage != onChainPos.Leverage {
+				logger, err := logMgr.GetStrategyLogger(id)
+				if err != nil {
+					fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", id, err)
+				} else {
+					logger.Info("hl-sync: %s leverage %v → %v (shared coin)", coin, pos.Leverage, onChainPos.Leverage)
+				}
+				pos.Leverage = onChainPos.Leverage
+				changed = true
+			}
+		}
+
+		// Compute reconciliation gap.
+		onChainQty := 0.0
+		if onChainPos != nil {
+			onChainQty = onChainPos.Size
+		}
+		delta := virtualQty - onChainQty
+
+		state.ReconciliationGaps[coin] = &ReconciliationGap{
+			Coin:       coin,
+			OnChainQty: onChainQty,
+			VirtualQty: virtualQty,
+			DeltaQty:   delta,
+			Strategies: stratIDs,
+			UpdatedAt:  now,
+		}
+
+		if math.Abs(delta) > 0.000001 {
+			fmt.Printf("[WARN] hl-sync: shared coin %s reconciliation gap: virtual=%.6f on-chain=%.6f delta=%.6f (strategies: %v)\n",
+				coin, virtualQty, onChainQty, delta, stratIDs)
+		}
+	}
+
+	// Clean up gaps for coins that are no longer shared.
+	for coin := range state.ReconciliationGaps {
+		if !sharedCoins[coin] {
+			delete(state.ReconciliationGaps, coin)
+		}
+	}
+
+	// Warn about unowned on-chain positions (not traded by any strategy).
+	tradedCoins := make(map[string]bool)
+	for coin := range coinStrategies {
+		tradedCoins[coin] = true
+	}
 	for _, p := range positions {
-		if _, ok := owned[p.Coin]; !ok {
+		if !tradedCoins[p.Coin] {
 			qty := math.Abs(p.Size)
 			side := "long"
 			if p.Size < 0 {
