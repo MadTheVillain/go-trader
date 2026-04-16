@@ -33,6 +33,39 @@ func TestResolveChannel(t *testing.T) {
 	}
 }
 
+func TestResolveTradeChannel(t *testing.T) {
+	channels := map[string]string{
+		"hyperliquid":       "ch-hl",
+		"hyperliquid-paper": "ch-hl-paper",
+		"spot":              "ch-spot",
+	}
+
+	// Paper trade: uses <platform>-paper when present.
+	if got := resolveTradeChannel(channels, "hyperliquid", "perps", false); got != "ch-hl-paper" {
+		t.Errorf("paper with -paper key: expected ch-hl-paper, got %s", got)
+	}
+
+	// Live trade: uses base platform key (ignores -paper).
+	if got := resolveTradeChannel(channels, "hyperliquid", "perps", true); got != "ch-hl" {
+		t.Errorf("live trade: expected ch-hl, got %s", got)
+	}
+
+	// Paper trade with no -paper key: falls back to base platform.
+	if got := resolveTradeChannel(channels, "binanceus", "spot", false); got != "ch-spot" {
+		t.Errorf("paper fallback to stratType: expected ch-spot, got %s", got)
+	}
+
+	// Paper trade with no channel at all.
+	if got := resolveTradeChannel(channels, "unknown", "unknown", false); got != "" {
+		t.Errorf("paper no channel: expected empty, got %s", got)
+	}
+
+	// Live trade falls back to stratType.
+	if got := resolveTradeChannel(channels, "binanceus", "spot", true); got != "ch-spot" {
+		t.Errorf("live fallback to stratType: expected ch-spot, got %s", got)
+	}
+}
+
 func TestChannelKeyFromID(t *testing.T) {
 	channels := map[string]string{
 		"spot":        "111",

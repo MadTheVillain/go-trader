@@ -269,12 +269,8 @@ type InitOptions struct {
 	AutoUpdate              string            // "off", "daily", "heartbeat" (default: "off")
 	DMPaperTrades           bool              // DM owner on paper trade execution
 	DMLiveTrades            bool              // DM owner on live trade execution
-	ChannelPaperTrades      bool              // post paper trade alerts to Discord channel
-	ChannelLiveTrades       bool              // post live trade alerts to Discord channel
 	TelegramDMPaper         bool              // Telegram: send on paper trade
 	TelegramDMLive          bool              // Telegram: send on live trade
-	TelegramChannelPaper    bool              // Telegram: post paper trade alerts to channel
-	TelegramChannelLive     bool              // Telegram: post live trade alerts to channel
 }
 
 // generateConfig builds a Config from InitOptions. Pure function, no I/O.
@@ -289,22 +285,18 @@ func generateConfig(opts InitOptions) *Config {
 			MaxNotionalUSD: 0,
 		},
 		Discord: DiscordConfig{
-			Enabled:            opts.DiscordEnabled,
-			OwnerID:            opts.DiscordOwnerID,
-			DMPaperTrades:      opts.DMPaperTrades,
-			DMLiveTrades:       opts.DMLiveTrades,
-			ChannelPaperTrades: opts.ChannelPaperTrades,
-			ChannelLiveTrades:  opts.ChannelLiveTrades,
-			Channels:           opts.ChannelMap,
+			Enabled:       opts.DiscordEnabled,
+			OwnerID:       opts.DiscordOwnerID,
+			DMPaperTrades: opts.DMPaperTrades,
+			DMLiveTrades:  opts.DMLiveTrades,
+			Channels:      opts.ChannelMap,
 		},
 		Telegram: TelegramConfig{
-			Enabled:            opts.TelegramEnabled,
-			OwnerChatID:        opts.TelegramOwnerChatID,
-			DMPaperTrades:      opts.TelegramDMPaper,
-			DMLiveTrades:       opts.TelegramDMLive,
-			ChannelPaperTrades: opts.TelegramChannelPaper,
-			ChannelLiveTrades:  opts.TelegramChannelLive,
-			Channels:           opts.TelegramChannelMap,
+			Enabled:       opts.TelegramEnabled,
+			OwnerChatID:   opts.TelegramOwnerChatID,
+			DMPaperTrades: opts.TelegramDMPaper,
+			DMLiveTrades:  opts.TelegramDMLive,
+			Channels:      opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
 		Platforms:  make(map[string]*PlatformConfig),
@@ -1059,15 +1051,11 @@ func runInit(args []string) int {
 	discordOwnerID := ""
 	dmLiveTrades := false
 	dmPaperTrades := false
-	channelLiveTrades := false
-	channelPaperTrades := false
 	telegramEnabled := false
 	telegramChannelMap := make(map[string]string)
 	telegramOwnerChatID := ""
 	telegramDMLive := false
 	telegramDMPaper := false
-	telegramChannelLive := false
-	telegramChannelPaper := false
 
 	// Auto-update defaults to off; HTF filter defaults to enabled.
 	autoUpdate := "off"
@@ -1169,12 +1157,8 @@ func runInit(args []string) int {
 		AutoUpdate:              autoUpdate,
 		DMPaperTrades:           dmPaperTrades,
 		DMLiveTrades:            dmLiveTrades,
-		ChannelPaperTrades:      channelPaperTrades,
-		ChannelLiveTrades:       channelLiveTrades,
 		TelegramDMPaper:         telegramDMPaper,
 		TelegramDMLive:          telegramDMLive,
-		TelegramChannelPaper:    telegramChannelPaper,
-		TelegramChannelLive:     telegramChannelLive,
 	}
 
 	cfg := generateConfig(opts)

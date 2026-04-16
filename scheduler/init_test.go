@@ -891,12 +891,6 @@ func TestGenerateConfig_DefaultsForOptionalFields(t *testing.T) {
 	if cfg.Discord.DMLiveTrades {
 		t.Error("expected Discord.DMLiveTrades=false by default")
 	}
-	if cfg.Discord.ChannelPaperTrades {
-		t.Error("expected Discord.ChannelPaperTrades=false by default")
-	}
-	if cfg.Discord.ChannelLiveTrades {
-		t.Error("expected Discord.ChannelLiveTrades=false by default")
-	}
 	if cfg.Telegram.DMPaperTrades {
 		t.Error("expected Telegram.DMPaperTrades=false by default")
 	}

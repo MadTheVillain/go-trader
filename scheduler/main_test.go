@@ -227,11 +227,10 @@ func TestSendTradeAlerts_DMAndChannel(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:           mock,
-				ownerID:            "owner123",
-				channels:           map[string]string{"spot": "ch-spot-123"},
-				dmPaperTrades:      true,
-				channelPaperTrades: true,
+				notifier:      mock,
+				ownerID:       "owner123",
+				channels:      map[string]string{"spot": "ch-spot-123"},
+				dmPaperTrades: true,
 			},
 		},
 	}
@@ -250,6 +249,7 @@ func TestSendTradeAlerts_DMAndChannel(t *testing.T) {
 }
 
 func TestSendTradeAlerts_DMOnly(t *testing.T) {
+	// DM enabled but no channel configured for platform — only DM sent.
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -264,11 +264,10 @@ func TestSendTradeAlerts_DMOnly(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:           mock,
-				ownerID:            "owner123",
-				channels:           map[string]string{"spot": "ch-spot-123"},
-				dmPaperTrades:      true,
-				channelPaperTrades: false,
+				notifier:      mock,
+				ownerID:       "owner123",
+				channels:      map[string]string{}, // no channels configured
+				dmPaperTrades: true,
 			},
 		},
 	}
@@ -284,6 +283,7 @@ func TestSendTradeAlerts_DMOnly(t *testing.T) {
 }
 
 func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
+	// Channel configured but DM disabled — only channel message sent.
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -298,11 +298,9 @@ func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:           mock,
-				ownerID:            "owner123",
-				channels:           map[string]string{"spot": "ch-spot-123"},
-				dmPaperTrades:      false,
-				channelPaperTrades: true,
+				notifier: mock,
+				ownerID:  "owner123",
+				channels: map[string]string{"spot": "ch-spot-123"},
 			},
 		},
 	}
@@ -318,6 +316,7 @@ func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
 }
 
 func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
+	// No DM enabled, no channel configured — nothing sent.
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -332,11 +331,9 @@ func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:           mock,
-				ownerID:            "owner123",
-				channels:           map[string]string{"spot": "ch-spot-123"},
-				dmPaperTrades:      false,
-				channelPaperTrades: false,
+				notifier: mock,
+				ownerID:  "owner123",
+				channels: map[string]string{}, // no channels configured
 			},
 		},
 	}
@@ -351,7 +348,8 @@ func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
 	}
 }
 
-func TestSendTradeAlerts_ChannelEnabledButNotConfigured(t *testing.T) {
+func TestSendTradeAlerts_NoChannelForPlatform(t *testing.T) {
+	// Channel map has "spot" but not "hyperliquid" or "perps" — no messages.
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-perps-sma",
@@ -363,22 +361,18 @@ func TestSendTradeAlerts_ChannelEnabledButNotConfigured(t *testing.T) {
 		TradeHistory: []Trade{testTrade()},
 	}
 	var mu sync.RWMutex
-	// Channel map has "spot" but not "hyperliquid" or "perps"
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:           mock,
-				ownerID:            "owner123",
-				channels:           map[string]string{"spot": "ch-spot-123"},
-				dmPaperTrades:      false,
-				channelPaperTrades: true,
+				notifier: mock,
+				ownerID:  "owner123",
+				channels: map[string]string{"spot": "ch-spot-123"},
 			},
 		},
 	}
 
 	sendTradeAlerts(sc, state, 1, &mu, notifier)
 
-	// Channel enabled but no channel for platform=hyperliquid type=perps, so no messages sent
 	if len(mock.dms) != 0 {
 		t.Errorf("expected no DM messages, got %d", len(mock.dms))
 	}
@@ -403,11 +397,10 @@ func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:          mock,
-				ownerID:           "owner123",
-				channels:          map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
-				dmLiveTrades:      true,
-				channelLiveTrades: true,
+				notifier:     mock,
+				ownerID:      "owner123",
+				channels:     map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
+				dmLiveTrades: true,
 			},
 		},
 	}
@@ -449,10 +442,9 @@ func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:          mock,
-				ownerID:           "",
-				channels:          map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl"}, // same channel
-				channelLiveTrades: true,
+				notifier: mock,
+				ownerID:  "",
+				channels: map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl"}, // same channel
 			},
 		},
 	}
@@ -465,7 +457,8 @@ func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
 }
 
 func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
-	// Paper trades should NOT post to the <platform>-live channel.
+	// Paper trades should NOT post to the <platform>-live channel; they use
+	// <platform>-paper (or fall back to base platform channel).
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -480,10 +473,9 @@ func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
 	notifier := &MultiNotifier{
 		backends: []notifierBackend{
 			{
-				notifier:           mock,
-				ownerID:            "",
-				channels:           map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
-				channelPaperTrades: true,
+				notifier: mock,
+				ownerID:  "",
+				channels: map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
 			},
 		},
 	}
@@ -495,6 +487,75 @@ func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
 	}
 	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-hl" {
 		t.Errorf("expected message to primary channel ch-hl, got %s", mock.messages[0].channelID)
+	}
+}
+
+func TestSendTradeAlerts_PaperChannelRouting(t *testing.T) {
+	// Paper trades should route to <platform>-paper channel when configured.
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier: mock,
+				ownerID:  "",
+				channels: map[string]string{
+					"hyperliquid":       "ch-hl-live",
+					"hyperliquid-paper": "ch-hl-paper",
+				},
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	if len(mock.messages) != 1 {
+		t.Errorf("expected 1 channel message, got %d", len(mock.messages))
+	}
+	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-hl-paper" {
+		t.Errorf("expected message to paper channel ch-hl-paper, got %s", mock.messages[0].channelID)
+	}
+}
+
+func TestSendTradeAlerts_PaperFallbackToBase(t *testing.T) {
+	// Paper trades fall back to base platform channel when no <platform>-paper key exists.
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
+	}
+	state := &StrategyState{
+		TradeHistory: []Trade{testTrade()},
+	}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier: mock,
+				ownerID:  "",
+				channels: map[string]string{"hyperliquid": "ch-hl"},
+			},
+		},
+	}
+
+	sendTradeAlerts(sc, state, 1, &mu, notifier)
+
+	if len(mock.messages) != 1 {
+		t.Errorf("expected 1 channel message, got %d", len(mock.messages))
+	}
+	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-hl" {
+		t.Errorf("expected message to base channel ch-hl, got %s", mock.messages[0].channelID)
 	}
 }
 

@@ -14,26 +14,22 @@ import (
 type DiscordConfig struct {
 	Enabled            bool              `json:"enabled"`
 	Token              string            `json:"token"`
-	OwnerID            string            `json:"owner_id,omitempty"`             // Discord user ID for DM features (upgrade prompts, config migration)
-	DMPaperTrades      bool              `json:"dm_paper_trades,omitempty"`      // DM owner on paper trade execution
-	DMLiveTrades       bool              `json:"dm_live_trades,omitempty"`       // DM owner on live trade execution
-	ChannelPaperTrades bool              `json:"channel_paper_trades,omitempty"` // post paper trade alerts to platform channel
-	ChannelLiveTrades  bool              `json:"channel_live_trades,omitempty"`  // post live trade alerts to platform channel
-	Channels           map[string]string `json:"channels"`                       // keyed by platform or type ("spot", "hyperliquid", "deribit", etc.)
-	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`    // number of entries shown in leaderboard messages (default 5)
-	LeaderboardChannel string            `json:"leaderboard_channel,omitempty"`  // dedicated Discord channel ID for leaderboard posts; when set, all leaderboards route here instead of being broadcast across platform channels
+	OwnerID            string            `json:"owner_id,omitempty"`            // Discord user ID for DM features (upgrade prompts, config migration)
+	DMPaperTrades      bool              `json:"dm_paper_trades,omitempty"`     // DM owner on paper trade execution
+	DMLiveTrades       bool              `json:"dm_live_trades,omitempty"`      // DM owner on live trade execution
+	Channels           map[string]string `json:"channels"`                      // keyed by platform or type; "<platform>-paper" for paper-specific channels
+	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`   // number of entries shown in leaderboard messages (default 5)
+	LeaderboardChannel string            `json:"leaderboard_channel,omitempty"` // dedicated Discord channel ID for leaderboard posts; when set, all leaderboards route here instead of being broadcast across platform channels
 }
 
 // TelegramConfig holds Telegram notification settings.
 type TelegramConfig struct {
-	Enabled            bool              `json:"enabled"`
-	BotToken           string            `json:"bot_token"`
-	OwnerChatID        string            `json:"owner_chat_id,omitempty"`        // Owner's Telegram chat ID for DMs/upgrade prompts
-	DMPaperTrades      bool              `json:"dm_paper_trades,omitempty"`      // send message on paper trade execution
-	DMLiveTrades       bool              `json:"dm_live_trades,omitempty"`       // send message on live trade execution
-	ChannelPaperTrades bool              `json:"channel_paper_trades,omitempty"` // post paper trade alerts to platform channel
-	ChannelLiveTrades  bool              `json:"channel_live_trades,omitempty"`  // post live trade alerts to platform channel
-	Channels           map[string]string `json:"channels"`                       // keyed by platform or type ("spot", "hyperliquid", etc.)
+	Enabled       bool              `json:"enabled"`
+	BotToken      string            `json:"bot_token"`
+	OwnerChatID   string            `json:"owner_chat_id,omitempty"`   // Owner's Telegram chat ID for DMs/upgrade prompts
+	DMPaperTrades bool              `json:"dm_paper_trades,omitempty"` // send message on paper trade execution
+	DMLiveTrades  bool              `json:"dm_live_trades,omitempty"`  // send message on live trade execution
+	Channels      map[string]string `json:"channels"`                  // keyed by platform or type; "<platform>-paper" for paper-specific channels
 }
 
 // PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
