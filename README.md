@@ -18,7 +18,7 @@ A Go + Python hybrid trading system. A single Go binary (~8MB RAM) orchestrates 
 
 **Discord alerts**: Per-platform channels for spot, options, hyperliquid, topstep, robinhood, and okx summaries, with immediate trade notifications. When a new release is detected, the bot DMs you directly — reply **yes** and it upgrades, rebuilds, and restarts itself automatically.
 
-Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood.
+Supported platforms: Binance US, Deribit, IBKR/CME, Hyperliquid, TopStep, Robinhood, OKX, Luno.
 
 ## Community
 
@@ -105,9 +105,9 @@ Go scheduler (always running, ~8MB idle)
     .venv/bin/python3 shared_scripts/check_price.py       → live prices
   ↓ processes signals, executes paper trades, manages risk
   ↓ marks options to market via Deribit REST API (live prices every cycle)
-  ↓ saves state → scheduler/state.json (atomic writes, survives restarts)
+  ↓ saves state → scheduler/state.db (SQLite, survives restarts)
   ↓ HTTP status → localhost:8099/status
-  ↓ Discord → per-platform channels (spot, options, hyperliquid, topstep, robinhood, okx)
+  ↓ Discord → per-platform channels (spot, options, hyperliquid, topstep, robinhood, okx, luno)
 
 Platform adapters (Python):
   platforms/binanceus/adapter.py   — spot (CCXT)
@@ -117,6 +117,7 @@ Platform adapters (Python):
   platforms/topstep/adapter.py     — futures (CME, paper via yfinance + live via TopStepX)
   platforms/robinhood/adapter.py   — crypto (paper via yfinance + live via robin_stocks)
   platforms/okx/adapter.py         — spot + perps + options (CCXT, paper + live)
+  platforms/luno/adapter.py        — spot (South African crypto exchange)
 ```
 
 Python gets the quant libraries (pandas, numpy, scipy, CCXT). Go gets memory efficiency. 50+ strategies cost ~220MB peak for ~30 seconds, then ~8MB idle.
@@ -200,6 +201,7 @@ US equity options on SPY, QQQ, AAPL, etc. using the same options strategies as D
 | Robinhood | Crypto | BTC, ETH, SOL, DOGE, etc. | Paper (yfinance) + live trading via robin_stocks |
 | Robinhood | Options | SPY, QQQ, AAPL, MSFT, etc. | Paper (Black-Scholes) + live chains via robin_stocks |
 | OKX | Spot + Perps + Options | BTC, ETH, SOL | CCXT, paper + live, MiCA/EU licensed |
+| Luno | Spot | BTC, ETH, etc. | South African crypto exchange |
 
 ---
 
@@ -211,9 +213,10 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 
 ```json
 {
-  "config_version": 2,
+  "config_version": 7,
   "interval_seconds": 3600,
   "state_file": "scheduler/state.json",
+  "db_file": "scheduler/state.db",
   "log_dir": "logs",
   "auto_update": "daily",
   "portfolio_risk": {
@@ -224,7 +227,7 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
     "enabled": true,
     "token": "",
     "owner_id": "",
-    "channels": { "spot": "CHANNEL_ID", "options": "CHANNEL_ID", "hyperliquid": "CHANNEL_ID", "topstep": "CHANNEL_ID", "robinhood": "CHANNEL_ID", "okx": "CHANNEL_ID" }
+    "channels": { "spot": "CHANNEL_ID", "options": "CHANNEL_ID", "hyperliquid": "CHANNEL_ID", "topstep": "CHANNEL_ID", "robinhood": "CHANNEL_ID", "okx": "CHANNEL_ID", "luno": "CHANNEL_ID" }
   },
   "platforms": {
     "hyperliquid": {
@@ -421,16 +424,25 @@ go-trader/
 ├── scheduler/              # Go scheduler source + config
 │   ├── main.go             # Main loop, strategy orchestration
 │   ├── config.go           # Config parsing + validation
+│   ├── config_migration.go # Config version registry, MigrateConfig, DM-based migration
 │   ├── executor.go         # Python subprocess runner
-│   ├── state.go            # State persistence (atomic writes)
+│   ├── db.go               # SQLite state persistence (modernc.org/sqlite)
+│   ├── state.go            # In-memory state loading wrapper
 │   ├── portfolio.go        # Spot position tracking
 │   ├── options.go          # Options positions, Greeks, theta harvest
+│   ├── balance.go          # Balance tracking and capital management
+│   ├── hyperliquid_balance.go # Hyperliquid account position sync
+│   ├── hyperliquid_marks.go   # Native Go HL /info allMids fetcher
+│   ├── okx_marks.go        # Native Go OKX perps tickers fetcher
+│   ├── shared_wallet.go    # Shared-wallet key (prevents double-counting HL capital)
 │   ├── risk.go             # Drawdown, circuit breakers
 │   ├── deribit.go          # Deribit REST API for live pricing
 │   ├── discord.go          # Discord gateway (discordgo), SendMessage/SendDM/AskDM
+│   ├── notifier.go         # MultiNotifier (Discord + Telegram)
+│   ├── telegram.go         # Telegram backend
 │   ├── updater.go          # Update checker, DM upgrade flow, applyUpgrade/restartSelf
 │   ├── correlation.go      # Per-asset directional exposure tracking
-│   ├── config_migration.go # Config version registry, MigrateConfig, DM-based migration
+│   ├── leaderboard.go      # Pre-computed strategy leaderboard
 │   ├── server.go           # HTTP status endpoint
 │   ├── fees.go             # Trading fee calculations
 │   ├── pricer.go           # OptionPricer interface
@@ -442,24 +454,25 @@ go-trader/
 │   └── state.example.json  # State template
 ├── shared_scripts/         # Stateless Python entry-point scripts
 │   ├── check_strategy.py   # Spot checker (Binance US via CCXT)
-│   ├── check_options.py    # Options checker (--platform=deribit|ibkr)
+│   ├── check_options.py    # Options checker (--platform=deribit|ibkr|robinhood|okx)
 │   ├── check_hyperliquid.py # Hyperliquid perps checker
 │   ├── check_okx.py         # OKX spot/perps checker
 │   ├── check_topstep.py    # TopStep futures checker
 │   ├── check_robinhood.py  # Robinhood crypto checker
-│   └── check_price.py      # Multi-symbol price fetcher
+│   ├── check_balance.py    # Live account reconciliation
+│   ├── check_price.py      # Multi-symbol price fetcher
+│   └── fetch_futures_marks.py # CME futures mark-price fetcher (TopStep)
 ├── platforms/              # Platform-specific adapters
 │   ├── binanceus/          # BinanceUS spot adapter
 │   ├── deribit/            # Deribit options adapter
 │   ├── ibkr/               # IBKR/CME options adapter
 │   ├── hyperliquid/        # Hyperliquid perps adapter
 │   ├── topstep/            # TopStep futures adapter
-│   ├── robinhood/          # Robinhood crypto adapter
-│   └── okx/                # OKX spot/perps/options adapter (CCXT)
-├── shared_tools/           # Shared Python utilities (pricing, exchange_base, storage)
+│   ├── robinhood/          # Robinhood crypto + stock options adapter
+│   ├── okx/                # OKX spot/perps/options adapter (CCXT)
+│   └── luno/               # Luno spot adapter
+├── shared_tools/           # Shared Python utilities (pricing, exchange_base, storage, htf_filter)
 ├── shared_strategies/      # Shared strategy logic (spot/, options/, futures/)
-├── core/                   # Legacy data utilities (used by backtest)
-├── strategies/             # Legacy spot strategy logic (used by backtest)
 ├── backtest/               # Backtesting tools
 ├── archive/                # Retired/unused modules
 ├── SKILL.md                # AI agent setup guide

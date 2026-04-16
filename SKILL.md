@@ -28,18 +28,21 @@ If missing, install:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 1c. Go runtime (1.23+)
+### 1c. Go runtime (1.26.0)
 ```bash
-go version 2>/dev/null || /usr/local/go/bin/go version 2>/dev/null || echo "NOT_INSTALLED"
+go version 2>/dev/null || /usr/local/go/bin/go version 2>/dev/null || /opt/homebrew/bin/go version 2>/dev/null || echo "NOT_INSTALLED"
 ```
 If missing, ask:
-> Go 1.23+ is required to build the scheduler. Want me to install it?
+> Go 1.26.0 is required to build the scheduler. Want me to install it?
 
 Install with:
 ```bash
-curl -sL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+# Linux
+curl -sL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+# macOS (Homebrew)
+brew install go@1.26
 ```
-Note: Go may not be in PATH. Use `/usr/local/go/bin/go` if `go` doesn't resolve.
+Note: Go may not be in PATH. Use `/usr/local/go/bin/go` (Linux) or `/opt/homebrew/bin/go` (macOS) if `go` doesn't resolve.
 
 ### 1d. Git
 ```bash
@@ -315,7 +318,7 @@ Ask for each group:
 ### If 3 (individual):
 Present each strategy and ask yes/no. Group them for readability:
 
-> **Spot Strategies** (5-minute checks):
+> **Spot Strategies** (1h checks):
 >
 > | # | Strategy | Assets | Description | Enable? |
 > |---|----------|--------|-------------|---------|
@@ -399,7 +402,7 @@ Start from `scheduler/config.example.json` as a template. For each enabled strat
 Discord config:
 - `discord.enabled`: true/false based on Step 4
 - `discord.token`: Always `""` (token comes from env var)
-- `discord.channels`: Map of channel IDs for enabled platform types, e.g. `{"spot": "ID_FROM_4b", "options": "ID_FROM_4c", "hyperliquid": "ID_FROM_4d", "topstep": "ID_FROM_4e", "okx": "ID_FROM_4f"}` — omit keys for platforms not in use
+- `discord.channels`: Map of channel IDs for enabled platform types, e.g. `{"spot": "ID_FROM_4b", "options": "ID_FROM_4c", "hyperliquid": "ID_FROM_4d", "topstep": "ID_FROM_4e", "okx": "ID_FROM_4f", "luno": "ID_FROM_4g"}` — omit keys for platforms not in use
 - Summary frequency is automatic: options post per-check, spot/hyperliquid/okx post hourly + on trades (no config field needed)
 
 ### 7b. OpenClaw Discord Allowlist (if applicable)
@@ -738,8 +741,8 @@ If Discord is enabled, wait for the first cycle to complete (~5 minutes) and ver
 > **Status:** `curl localhost:8099/status`
 > **Logs:** `journalctl -u go-trader -f`
 >
-> Spot strategies check every 5 minutes (summaries {freq}).
-> Options strategies check every 20 minutes (summaries per check).
+> Spot/perps strategies check every 1h (summaries hourly).
+> Options strategies check every 4h (summaries per check).
 > Trades post immediately to Discord.
 >
 > **Useful commands:**
@@ -973,13 +976,15 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
      theta_harvest.*   — profit_target_pct, stop_loss_pct, min_dte_close
    Discord:
      enabled           — true/false
-     channels          — map: "spot", "options", "hyperliquid", "topstep", "robinhood", "okx"
-     summary_interval  — how often to post summaries
+     channels          — map: "spot", "options", "hyperliquid", "topstep", "robinhood", "okx", "luno"
    Environment (sudo systemctl edit go-trader):
-     DISCORD_BOT_TOKEN, STATUS_AUTH_TOKEN
+     DISCORD_BOT_TOKEN, DISCORD_OWNER_ID, STATUS_AUTH_TOKEN
      BINANCE_API_KEY, BINANCE_API_SECRET
+     HYPERLIQUID_SECRET_KEY, HYPERLIQUID_ACCOUNT_ADDRESS
      TOPSTEP_API_KEY, TOPSTEP_API_SECRET, TOPSTEP_ACCOUNT_ID
      ROBINHOOD_USERNAME, ROBINHOOD_PASSWORD, ROBINHOOD_TOTP_SECRET
+     OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE, OKX_SANDBOX
+     LUNO_API_KEY_ID, LUNO_API_KEY_SECRET
 
 4. COMMANDS
    /menu       — this overview
@@ -1022,7 +1027,8 @@ Config changes are synced to state on startup — no need to reset positions.
 | Setting | Key | Default | Description |
 |---------|-----|---------|-------------|
 | Check interval | `interval_seconds` | 300 (5 min) | Global default cycle interval in seconds |
-| State file path | `state_file` | `scheduler/state.json` | Where positions and trade history are stored |
+| State DB path | `db_file` | `scheduler/state.db` | SQLite DB — sole store for positions, trades, and risk state at runtime |
+| Legacy state file | `state_file` | `scheduler/state.json` | One-time migration source only: read on first boot when SQLite is empty, then ignored. Safe to omit from new configs. |
 | Auto-update | `auto_update` | `"off"` | Update check mode: `"off"`, `"daily"`, `"heartbeat"` |
 
 ### Correlation Tracking
@@ -1056,7 +1062,7 @@ Each entry in the `strategies` array supports:
 | Setting | Key | Default | Description |
 |---------|-----|---------|-------------|
 | Enable Discord | `discord.enabled` | true | Turn Discord notifications on/off |
-| Channels | `discord.channels` | — | Map of channel IDs keyed by platform/type: `"spot"`, `"options"`, `"hyperliquid"`, `"topstep"`, `"okx"`, etc. |
+| Channels | `discord.channels` | — | Map of channel IDs keyed by platform/type: `"spot"`, `"options"`, `"hyperliquid"`, `"topstep"`, `"robinhood"`, `"okx"`, `"luno"`, etc. |
 | Owner ID | `discord.owner_id` | — | Your Discord user ID — enables DM upgrade prompts and post-upgrade config migration. Use `DISCORD_OWNER_ID` env var (preferred). |
 
 ### Environment Variables
@@ -1070,12 +1076,20 @@ Set via systemd override (`sudo systemctl edit go-trader`):
 | `STATUS_AUTH_TOKEN` | Optional: require Bearer token for /status endpoint |
 | `BINANCE_API_KEY` | Binance API key (live trading only) |
 | `BINANCE_API_SECRET` | Binance API secret (live trading only) |
+| `HYPERLIQUID_SECRET_KEY` | Hyperliquid signing key (perps live trading only) |
+| `HYPERLIQUID_ACCOUNT_ADDRESS` | Hyperliquid account address (shared-wallet tracking) |
 | `TOPSTEP_API_KEY` | TopStep API key (futures live trading only) |
 | `TOPSTEP_API_SECRET` | TopStep API secret (futures live trading only) |
 | `TOPSTEP_ACCOUNT_ID` | TopStep account ID (futures live trading only) |
-| `ROBINHOOD_USERNAME` | Robinhood account email (crypto live trading only) |
-| `ROBINHOOD_PASSWORD` | Robinhood account password (crypto live trading only) |
+| `ROBINHOOD_USERNAME` | Robinhood account email (crypto/options live trading only) |
+| `ROBINHOOD_PASSWORD` | Robinhood account password (crypto/options live trading only) |
 | `ROBINHOOD_TOTP_SECRET` | TOTP secret for Robinhood MFA (base32 string from authenticator setup) |
+| `OKX_API_KEY` | OKX API key (live trading only) |
+| `OKX_API_SECRET` | OKX API secret (live trading only) |
+| `OKX_PASSPHRASE` | OKX API passphrase (live trading only) |
+| `OKX_SANDBOX` | Set to `1` to target OKX demo trading environment |
+| `LUNO_API_KEY_ID` | Luno API key ID (live trading only) |
+| `LUNO_API_KEY_SECRET` | Luno API secret (live trading only) |
 
 ### Example: Adjusting a Strategy
 

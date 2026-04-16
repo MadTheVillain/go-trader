@@ -31,6 +31,11 @@
   - `risk.go` — per-strategy risk checks (drawdown limits, position sizing)
   - `telegram.go` — Telegram notification backend
   - `pricer.go` — `OptionPricer` interface; `ibkr_pricer.go` — IBKRPricer with Black-Scholes
+  - `db.go` — SQLite state persistence (`modernc.org/sqlite` pure-Go driver); `OpenStateDB(path)`, `SaveStateWithDB`, `LoadStateWithDB`; tables: `app_state`, `strategies`, `positions`, `option_positions`, `trades`, `portfolio_risk`, `kill_switch_events`, `correlation_snapshot`
+  - `hyperliquid_marks.go` — `fetchHyperliquidMids(coins)` native Go HL `/info allMids` fetcher; correct oracle for HL perps PnL (replaces BinanceUS spot basis spoofing, issue #263)
+  - `okx_marks.go` — `fetchOKXPerpsMids(coins)` native Go OKX `/api/v5/market/tickers?instType=SWAP` fetcher; USDT-margined swaps only (PR #280, issue #279); test stub via `okxMainnetURL` var
+  - `deribit.go` — native Go Deribit `/public/ticker` fetcher (mark/underlying price + greeks)
+  - `shared_wallet.go` — `SharedWalletKey{Platform, Account}` + `walletKeyFor(sc)`; prevents double-counting capital when multiple strategies trade from the same on-exchange wallet (currently HL live perps all share `HYPERLIQUID_ACCOUNT_ADDRESS`)
 - `shared_scripts/` — Python entry-point scripts called by the scheduler
   - `check_strategy.py` — spot strategy signal checker
   - `check_options.py` — unified options checker (`--platform=deribit|ibkr|robinhood|okx`)
@@ -40,6 +45,7 @@
   - `check_robinhood.py` — Robinhood crypto checker (`<strategy> <symbol> <timeframe> [--mode=paper|live]`; `--execute` for live orders; OHLCV via yfinance)
   - `check_okx.py` — OKX spot/perps checker (`<strategy> <symbol> <timeframe> [--mode=paper|live] [--inst-type=spot|swap]`; `--execute` for live orders; CCXT)
   - `check_balance.py` — balance/position checker for live account reconciliation
+  - `fetch_futures_marks.py` — CME futures mark-price fetcher; revalues open TopStep positions at live marks (issue #261); TopStep adapter auto-selects TopStepX live quotes vs yfinance paper
 - `platforms/` — platform-specific adapters (deribit, ibkr, binanceus, hyperliquid, topstep, robinhood, okx, luno)
   - `deribit/adapter.py` — DeribitExchangeAdapter (live quotes, real expiries/strikes)
   - `ibkr/adapter.py` — IBKRExchangeAdapter (CME strikes, Black-Scholes pricing)
@@ -79,7 +85,8 @@
 - Hyperliquid SDK funding rates: `info.meta_and_asset_ctxs()` returns current predicted funding rate per asset (NOT `info.meta()` which only returns universe metadata); `info.funding_history(coin, startTime)` for historical rates; response uses parallel arrays — universe[i] matches asset_ctxs[i]
 - Fee dispatch: `CalculatePlatformSpotFee(platform, value)` — 0.035% hyperliquid, 0% robinhood, 0.1% binanceus (replaces bare `CalculateSpotFee` for platform-aware spot/perps trades); `CalculateFuturesFee(contracts, feePerContract)` and `CalculatePlatformFuturesFee(sc, contracts)` for futures per-contract fees
 - Position ownership: `Position.OwnerStrategyID` tracks which strategy opened a position; `syncHyperliquidAccountPositions` syncs on-chain positions once per cycle (not per-strategy) and only reconciles positions with their owner; `syncHyperliquidLiveCapital` is a no-op — capital is set from config or `capital_pct`
-- State persisted to `scheduler/state.json` (path set in config); per-platform files at `platforms/<name>/state.json`
+- State persisted exclusively to SQLite at runtime: `scheduler/state.db` (`cfg.DBFile`, default `scheduler/state.db`) via `SaveStateWithDB`/`LoadStateWithDB`; `cfg.StateFile` (`scheduler/state.json`) is a one-time migration source — `loadJSONPlatformStates` only runs on first boot when SQLite is empty, then the JSON files are never read again; `init.go` still emits a default `state_file` into new configs (cosmetic) and `leaderboard.go` uses `filepath.Dir(cfg.StateFile)` as a directory anchor
+- Native Go mark fetchers: `fetchHyperliquidMids` (hyperliquid_marks.go), `fetchOKXPerpsMids` (okx_marks.go), and Deribit ticker fetcher (deribit.go) replace per-cycle Python subprocess calls — pattern: expose base URL as `var xxxMainnetURL` so httptest stubs can redirect in tests
 - `cfg.Discord.Channels` is `map[string]string` (not a struct); keys: "spot", "options", "hyperliquid", etc. — old `.Spot`/`.Options` field access is invalid
 - `cfg.Discord.OwnerID` — Discord user ID for DM upgrade prompts + config migration; loaded from `DISCORD_OWNER_ID` env var (takes priority over config file)
 - `cfg.ConfigVersion` — int, schema version (`0`/missing = v1 baseline); `CurrentConfigVersion = 7` in config_migration.go; startup triggers `runConfigMigrationDM` when below current version
