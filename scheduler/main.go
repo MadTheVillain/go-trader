@@ -185,6 +185,16 @@ func main() {
 	notifier := NewMultiNotifier(backends...)
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
 
+	// Route trade-persist warnings (#289) to owner DM so operators see
+	// immediate trade-DB failures instead of only stderr. Safe to wire after
+	// OpenStateDB — any RecordTrade calls between those two points still log
+	// to stderr via the nil-check in state.go.
+	if notifier.HasOwner() {
+		tradePersistWarn = func(msg string) {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
 	// -summary mode: post snapshot summary for the specified channel and exit.
 	// Checked early since it only needs config, state, and notifier — avoids
 	// launching the config-migration goroutine, update checks, and pricers

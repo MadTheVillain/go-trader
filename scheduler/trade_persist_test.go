@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -239,6 +241,103 @@ func TestExecutePerpsSignal_PersistsExchangeMetadata(t *testing.T) {
 	}
 	if got.ExchangeFee != 0.42 {
 		t.Errorf("persisted ExchangeFee = %v, want 0.42 (stamp never reached DB)", got.ExchangeFee)
+	}
+}
+
+// TestRecordTrade_OutOfOrderFailureRecoveredBySaveState verifies the dedup
+// fix for the #289 carry-over: when an earlier-timestamped RecordTrade fails
+// eager-insert but a later-timestamped one succeeds, the pre-fix MAX(timestamp)
+// dedup in SaveState would skip the earlier row because its ts < latestTS and
+// drop it permanently. With the persisted-flag approach, the earlier row is
+// still marked persisted=false and SaveState's next flush picks it up.
+func TestRecordTrade_OutOfOrderFailureRecoveredBySaveState(t *testing.T) {
+	db := openTestDB(t)
+
+	// Inject a recorder that fails the FIRST call, then delegates to the DB.
+	// Simulates a transient write hiccup on trade T1 while T2 lands cleanly.
+	calls := 0
+	prev := tradeRecorder
+	tradeRecorder = func(id string, tr Trade) error {
+		calls++
+		if calls == 1 {
+			return fmt.Errorf("simulated transient failure")
+		}
+		return db.InsertTrade(id, tr)
+	}
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"s-oo": {
+				ID: "s-oo", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				TradeHistory: []Trade{},
+			},
+		},
+	}
+
+	s := state.Strategies["s-oo"]
+	t1 := time.Now().UTC()
+	RecordTrade(s, Trade{Timestamp: t1, Symbol: "BTC", Side: "buy", Quantity: 1, Price: 50000, Value: 50000})
+	RecordTrade(s, Trade{Timestamp: t1.Add(time.Millisecond), Symbol: "ETH", Side: "buy", Quantity: 5, Price: 2000, Value: 10000})
+
+	// After eager inserts: T1 failed (persisted=false), T2 succeeded (persisted=true).
+	if s.TradeHistory[0].persisted {
+		t.Fatal("T1 should not be persisted — recorder failed")
+	}
+	if !s.TradeHistory[1].persisted {
+		t.Fatal("T2 should be persisted — recorder succeeded")
+	}
+
+	// Cycle-end SaveState must backfill T1, even though its ts < MAX(ts) in DB.
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	ss := loaded.Strategies["s-oo"]
+	if ss == nil || len(ss.TradeHistory) != 2 {
+		t.Fatalf("loaded trades = %d, want 2 (T1 was dropped by old ts-dedup?)", len(ss.TradeHistory))
+	}
+	// Symbols must match: BTC then ETH in ts order.
+	if ss.TradeHistory[0].Symbol != "BTC" || ss.TradeHistory[1].Symbol != "ETH" {
+		t.Errorf("loaded symbols = %q,%q, want BTC,ETH", ss.TradeHistory[0].Symbol, ss.TradeHistory[1].Symbol)
+	}
+}
+
+// TestRecordTrade_PersistFailureTriggersWarnHook verifies the operator-visible
+// notification path (#289 observability follow-up): when InsertTrade fails,
+// tradePersistWarn is invoked so the failure surfaces beyond stderr.
+func TestRecordTrade_PersistFailureTriggersWarnHook(t *testing.T) {
+	prevRec := tradeRecorder
+	prevWarn := tradePersistWarn
+	tradeRecorder = func(string, Trade) error { return fmt.Errorf("boom") }
+	var warnings []string
+	tradePersistWarn = func(msg string) { warnings = append(warnings, msg) }
+	t.Cleanup(func() {
+		tradeRecorder = prevRec
+		tradePersistWarn = prevWarn
+	})
+
+	s := &StrategyState{ID: "warn-test", TradeHistory: []Trade{}}
+	RecordTrade(s, Trade{Timestamp: time.Now().UTC(), Symbol: "BTC", Side: "buy"})
+
+	if len(warnings) != 1 {
+		t.Fatalf("warn hook fired %d times, want 1", len(warnings))
+	}
+	if !strings.Contains(warnings[0], "warn-test") || !strings.Contains(warnings[0], "boom") {
+		t.Errorf("warning = %q, want strategy ID + underlying error", warnings[0])
+	}
+	// In-memory append must still happen despite recorder failure.
+	if len(s.TradeHistory) != 1 {
+		t.Errorf("TradeHistory len = %d, want 1 (append must survive recorder failure)", len(s.TradeHistory))
+	}
+	if s.TradeHistory[0].persisted {
+		t.Error("trade should not be marked persisted after recorder failure")
 	}
 }
 

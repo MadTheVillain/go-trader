@@ -30,6 +30,14 @@ type Trade struct {
 	Details         string    `json:"details"`
 	ExchangeOrderID string    `json:"exchange_order_id,omitempty"` // exchange-provided order ID (e.g. Hyperliquid oid)
 	ExchangeFee     float64   `json:"exchange_fee,omitempty"`      // fee charged by exchange (if available)
+
+	// persisted tracks whether this Trade has been written to SQLite — set by
+	// RecordTrade on successful InsertTrade and by LoadState for DB-loaded
+	// rows. SaveState uses this flag instead of a MAX(timestamp) check so an
+	// out-of-order RecordTrade failure (T1 fails, T2 succeeds) is picked up
+	// on the next flush rather than silently dropped because T1 < latestTS.
+	// Not serialized — purely in-memory bookkeeping.
+	persisted bool
 }
 
 // PortfolioValue calculates total value of a strategy's portfolio.
@@ -90,6 +98,10 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // open shorts, and runHyperliquidExecuteOrder sizes buys as a fresh open,
 // not close+open. The policy above exists so the invariant survives any
 // future adapter that does model flips as two fills or adds short-open.
+// The same policy is correct if an adapter ever reports a single atomic
+// net-flip fill (one OID, one fee, exchange reduces short and opens long
+// in one shot) — the single real fee lands on the opener, which is the
+// trade that represents the one exchange action.
 func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
