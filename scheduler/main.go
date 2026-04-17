@@ -471,6 +471,11 @@ func main() {
 			mu.RLock()
 			totalPV, usedPVFallback := computeTotalPortfolioValue(cfg.Strategies, state, prices, walletBalances, sharedWallets)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
+			// #296: aggregate perps margin drawdown inputs alongside the
+			// equity total so the portfolio kill switch can fire on a
+			// leveraged margin blow-up that would otherwise hide inside
+			// equity-only drawdown for all-perps accounts.
+			perpsLoss, perpsMargin := AggregatePerpsMarginDrawdown(state.Strategies, prices)
 			mu.RUnlock()
 
 			mu.Lock()
@@ -481,7 +486,7 @@ func main() {
 			// we snapshot before the call and restore if we're on a fallback
 			// cycle. Drawdown detection still runs against the frozen peak.
 			origPeak := state.PortfolioRisk.PeakValue
-			portfolioAllowed, nb, portfolioWarning, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional)
+			portfolioAllowed, nb, portfolioWarning, portfolioReason := CheckPortfolioRisk(&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional, perpsLoss, perpsMargin)
 			if usedPVFallback && state.PortfolioRisk.PeakValue > origPeak {
 				state.PortfolioRisk.PeakValue = origPeak
 			}
