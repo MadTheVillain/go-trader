@@ -1,5 +1,13 @@
 # Theta Harvesting Backtest Results
 
+> ⚠️ **SUPERSEDED — 2026-04-17.** These results were produced with the
+> pre-fix volatility and IV-rank math (issue #302). The old `calc_historical_vol`
+> used simple returns and `sum(r**2)/n` (not variance around the mean), and
+> `calc_iv_rank` returned an IV *ratio* rather than a percentile rank. Both
+> inflated Black-Scholes premiums and skewed entry timing, so the numbers
+> below should not be treated as live-comparable. Rerun after the #302 C2/C3
+> fixes ship before using any figure in this document.
+
 **Date:** 2026-02-11
 **Data:** Binance US, 2023-01-01 to 2026-02-11 (1,048 days)
 **Strategy:** Vol Mean Reversion (sell strangles on high IV, buy straddles on low IV)

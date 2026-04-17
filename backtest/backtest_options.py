@@ -64,12 +64,23 @@ def black_scholes_price(spot: float, strike: float, dte_days: float, vol: float,
 
 
 def calc_historical_vol(closes: list, window: int = 14) -> float:
-    """Calculate annualized historical volatility from daily closes."""
+    """Annualized historical volatility from daily closes.
+
+    Uses log returns (correct for multiplicative price processes) and
+    population variance around the sample mean. The previous implementation
+    used simple returns with ``sum(r**2) / n`` — the latter is the mean of
+    squared returns, which equals variance only when the mean return is
+    exactly zero. For crypto over short windows that assumption is false,
+    inflating vol and overpricing every Black-Scholes premium.
+    """
     if len(closes) < window + 1:
         return 0.5  # default 50%
-    
-    returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(-window, 0)]
-    variance = sum(r**2 for r in returns) / len(returns)
+
+    log_returns = [
+        math.log(closes[i] / closes[i - 1]) for i in range(-window, 0)
+    ]
+    mean = sum(log_returns) / len(log_returns)
+    variance = sum((r - mean) ** 2 for r in log_returns) / len(log_returns)
     return math.sqrt(variance * 365)
 
 
