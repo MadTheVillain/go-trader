@@ -9,6 +9,7 @@ import os
 import argparse
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 
 # shared_tools is needed for data_fetcher; the strategy registry is loaded
@@ -16,9 +17,7 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from data_fetcher import load_cached_data
-from htf_filter import (  # noqa: E402
-    get_default_htf, apply_htf_filter, _compute_ema,
-)
+from htf_filter import get_default_htf, apply_htf_filter  # noqa: E402
 from registry_loader import load_registry
 from backtester import Backtester, format_results
 from optimizer import walk_forward_optimize, DEFAULT_PARAM_RANGES
@@ -34,9 +33,10 @@ def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
     """Compute the HTF trend (1/-1/0) aligned to each LTF bar.
 
     Live scheduler uses ``htf_trend_filter`` which fetches the HTF series at
-    request time. Backtest applies the same EMA logic against cached HTF
-    OHLCV and then ``merge_asof``-aligns it to the LTF bar timestamps so
-    filtering decisions match what live would have made on each bar
+    request time. Backtest mirrors the same EMA logic (alpha = 2/(N+1),
+    matching ``shared_tools/htf_filter._compute_ema``) against cached HTF
+    OHLCV, then forward-fills onto the LTF bar index so each LTF bar sees
+    the most recently closed HTF bar — same temporal semantics as live
     (issue #304 M2).
     """
     htf = get_default_htf(timeframe)
@@ -46,26 +46,14 @@ def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
         # (same fail-open behavior as live ``htf_trend_filter`` on error).
         return pd.Series(0, index=ltf_index, dtype=int)
 
-    closes = htf_df["close"].astype(float).values
-    ema = _compute_ema(closes, ema_period)
+    closes = htf_df["close"].astype(float)
+    ema = closes.ewm(span=ema_period, adjust=False).mean()
     trend = pd.Series(
-        [(1 if c > e else (-1 if c < e else 0)) for c, e in zip(closes, ema)],
+        np.where(closes > ema, 1, np.where(closes < ema, -1, 0)),
         index=htf_df.index,
         dtype=int,
     )
-
-    # Align HTF trend to each LTF bar by taking the most recent HTF
-    # observation at-or-before the LTF bar — same temporal semantics as
-    # live (a strategy at LTF bar t sees the most recently closed HTF bar).
-    aligned = pd.merge_asof(
-        pd.DataFrame(index=ltf_index).reset_index().rename(columns={"index": "ts"}),
-        trend.rename("htf_trend").reset_index().rename(columns={"timestamp": "ts", "index": "ts"}),
-        on="ts",
-        direction="backward",
-    )
-    aligned["htf_trend"] = aligned["htf_trend"].fillna(0).astype(int)
-    aligned.index = ltf_index
-    return aligned["htf_trend"]
+    return trend.reindex(ltf_index, method="ffill").fillna(0).astype(int)
 
 
 def _apply_htf_filter_to_df(df: pd.DataFrame, symbol: str,

@@ -66,6 +66,14 @@ def test_nan_signal_is_treated_as_hold():
     assert result["total_trades"] == 1
 
 
+def test_non_integral_float_signal_raises():
+    """1.5 from a fractional-sizing bug must raise, not truncate silently to 1."""
+    df = _df_with_signals([0.0, 1.5, 0.0, -1.0, 0.0])
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
+    with pytest.raises(ValueError, match=r"non-integral values"):
+        bt.run(df, save=False)
+
+
 # --------------------------------------------------------------------------- #
 # M3 — Sharpe annualization derives from timeframe                            #
 # --------------------------------------------------------------------------- #
@@ -216,3 +224,76 @@ def test_theta_force_close_emits_trade_log_entries():
     # counted as trades). If any trade exists, the log shouldn't be empty.
     if bt.total_trades > 0:
         assert len(bt.trade_log) > 0
+
+
+# --------------------------------------------------------------------------- #
+# M2 — run_backtest --htf-filter path                                         #
+# --------------------------------------------------------------------------- #
+
+def _htf_ohlcv_df(n=120, start_price=100.0, drift=0.5, seed=3):
+    """Build a synthetic HTF OHLCV frame with the same index name
+    (``datetime``) that ``shared_tools.data_fetcher.load_cached_data``
+    produces — the real shape the backtest consumes at runtime."""
+    rng = np.random.default_rng(seed)
+    closes = [start_price]
+    for _ in range(n - 1):
+        closes.append(closes[-1] + drift + rng.normal(0, 0.2))
+    idx = pd.date_range("2023-01-01", periods=n, freq="D", name="datetime")
+    return pd.DataFrame(
+        {"open": closes, "high": closes, "low": closes,
+         "close": closes, "volume": [1.0] * n},
+        index=idx,
+    )
+
+
+def test_htf_trend_series_aligns_on_datetime_indexed_frames(monkeypatch):
+    """Regression: the prior merge_asof implementation renamed from
+    ``timestamp``/``index`` to ``ts``, but ``load_cached_data`` returns a
+    ``datetime``-named index — so every real run raised KeyError. The
+    reindex-based implementation must work against the real index name
+    and emit one trend value per LTF bar."""
+    import run_backtest  # backtest/ is already on sys.path via conftest
+
+    htf_df = _htf_ohlcv_df(n=120)
+    monkeypatch.setattr(run_backtest, "load_cached_data",
+                        lambda *a, **kw: htf_df)
+
+    ltf_index = pd.date_range("2023-02-01", periods=40, freq="6h",
+                              name="datetime")
+    trend = run_backtest._htf_trend_series("BTC/USDT", "1h", ltf_index)
+
+    assert len(trend) == len(ltf_index)
+    # Upward-drifting series → close eventually exceeds EMA → bullish trend.
+    assert set(trend.unique()).issubset({-1, 0, 1})
+    assert (trend == 1).any(), "expected bullish bars in upward-drift series"
+
+
+def test_run_single_backtest_with_htf_filter(monkeypatch):
+    """End-to-end: run_single_backtest(..., htf_filter=True) against a
+    mocked ``load_cached_data`` must not raise and must produce a result
+    dict (proves the HTF path wires together without the KeyError)."""
+    import run_backtest
+
+    ltf = _htf_ohlcv_df(n=200, drift=0.3)
+    htf = _htf_ohlcv_df(n=60, drift=1.0)
+    calls = {"n": 0}
+
+    def fake_load(symbol, timeframe, **kw):
+        calls["n"] += 1
+        # First call is LTF (run_single_backtest), subsequent is HTF
+        # (_htf_trend_series). Both return the same shape — what matters
+        # is that the ``datetime``-named index flows through.
+        return ltf if calls["n"] == 1 else htf
+
+    monkeypatch.setattr(run_backtest, "load_cached_data", fake_load)
+
+    result = run_backtest.run_single_backtest(
+        strategy_name="sma_crossover",
+        symbol="BTC/USDT",
+        timeframe="1d",
+        since="2023-01-01",
+        capital=1000.0,
+        htf_filter=True,
+    )
+    assert result is not None
+    assert "total_trades" in result

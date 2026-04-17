@@ -39,7 +39,11 @@ def adapter_strike(underlying: str, target_strike: float) -> float:
     return round(target_strike / step) * step
 
 
-SUPPORTED_UNDERLYING_EXCHANGES = ("binanceus", "binance", "okx", "kraken", "coinbase")
+# USDT-quoted venues only — Coinbase/Kraken primarily list USD (BTC-USD,
+# XBT/USD) so ``{UNDERLYING}/USDT`` would pass the guard and then fail at
+# fetch_ohlcv with an unknown-symbol error. Add a quote-map here if we ever
+# want to support USD-quoted venues.
+SUPPORTED_UNDERLYING_EXCHANGES = ("binanceus", "binance", "okx")
 
 
 def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d",
@@ -49,8 +53,9 @@ def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d",
     Options live on Deribit / OKX / IBKR / Robinhood, but we use a spot
     exchange here only to fetch the *underlying* price series for premium
     pricing. ``exchange_name`` lets callers pick a non-BinanceUS source
-    when BinanceUS is geo-blocked or missing the symbol; unknown exchanges
-    fall back to BinanceUS with a warning (issue #304 L2).
+    when BinanceUS is geo-blocked or missing the symbol; unknown or
+    non-USDT-quoted exchanges fall back to BinanceUS with a warning
+    (issue #304 L2).
     """
     import ccxt
     if exchange_name not in SUPPORTED_UNDERLYING_EXCHANGES:

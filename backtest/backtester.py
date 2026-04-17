@@ -164,12 +164,20 @@ class Backtester:
             raise ValueError("DataFrame must have a 'signal' column")
 
         df = df.copy()
-        # Contract: signal ∈ {-1, 0, 1}. position.diff() emits floats and some
-        # strategies emit ints; cast to int so equality checks against literal
-        # ints below are unambiguous, and reject any out-of-domain value
-        # (e.g. +2 "double size") explicitly rather than silently filling
-        # nothing — see issue #304 M1.
-        sig_int = df["signal"].fillna(0).astype(int)
+        # Contract: signal ∈ {-1, 0, 1}. position.diff() emits ±1.0 floats and
+        # some strategies emit ints; coerce NaN → 0, reject non-integral floats
+        # (e.g. 1.5 from a fractional-sizing bug) before casting, and then
+        # reject any out-of-domain integer (e.g. +2 "double size") — all three
+        # surface as explicit errors rather than silent truncation.
+        # See issue #304 M1.
+        sig_raw = df["signal"].fillna(0).astype(float)
+        non_integral = sig_raw[sig_raw != sig_raw.round()]
+        if not non_integral.empty:
+            raise ValueError(
+                f"signal column must be in {{-1, 0, 1}} — got "
+                f"non-integral values {sorted(set(non_integral.unique().tolist()))}"
+            )
+        sig_int = sig_raw.astype(int)
         bad = sig_int[~sig_int.isin([-1, 0, 1])]
         if not bad.empty:
             raise ValueError(
