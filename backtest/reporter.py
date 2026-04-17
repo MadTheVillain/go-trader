@@ -9,7 +9,6 @@ import json
 from typing import List, Dict, Optional
 from datetime import datetime
 
-# shared_tools is needed for storage.get_backtest_results.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 import numpy as np

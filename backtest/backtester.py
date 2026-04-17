@@ -10,7 +10,6 @@ import math
 from datetime import datetime
 from typing import Callable, Optional
 
-# shared_tools is needed for storage.store_backtest_result.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 import numpy as np
@@ -20,7 +19,7 @@ from storage import store_backtest_result
 
 
 # Taker fee rates per platform — mirrors scheduler/fees.go:CalculatePlatformSpotFee
-# and related constants. Keep in sync with the Go source.
+# and related constants. test_platform_fees.py scrapes fees.go to enforce parity.
 PLATFORM_FEE_PCT = {
     "binanceus":   0.001,    # BinanceSpotFeePct
     "hyperliquid": 0.00035,  # HyperliquidTakerFeePct

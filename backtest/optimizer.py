@@ -17,6 +17,9 @@ from registry_loader import load_registry
 from backtester import Backtester
 
 
+_EXPECTED_FOLD_ERRORS = (KeyError, ValueError, TypeError, IndexError, ZeroDivisionError)
+
+
 def generate_param_grid(param_ranges: Dict[str, list]) -> List[dict]:
     """Generate all parameter combinations from ranges."""
     keys = list(param_ranges.keys())
@@ -113,9 +116,7 @@ def walk_forward_optimize(
             continue
 
         # Pre-roll indicator state with ``warmup`` bars of preceding history
-        # before train/test. Without this, a 100-bar window against an SMA-80
-        # grid produces all-NaN signals and "wins" with zero trades — the
-        # silent-failure path the warmup fix is preventing.
+        # so long-lookback indicators prime before the first signal bar.
         train_boundary = start_idx + train_size
         train_start_ext = max(0, start_idx - warmup)
         test_start_ext = max(0, train_boundary - warmup)
@@ -143,7 +144,9 @@ def walk_forward_optimize(
                 if isinstance(metric_val, (int, float)) and metric_val > best_metric:
                     best_metric = metric_val
                     best_params = params
-            except Exception:
+            except _EXPECTED_FOLD_ERRORS as e:
+                if verbose:
+                    print(f"    [skip] fold {fold+1} {strategy_name} {params}: {type(e).__name__}: {e}")
                 continue
 
         if best_params is None:
@@ -156,7 +159,9 @@ def walk_forward_optimize(
             test_result = bt.run(test_signals, strategy_name=strategy_name,
                                symbol=symbol, timeframe=timeframe,
                                params=best_params, save=False)
-        except Exception:
+        except _EXPECTED_FOLD_ERRORS as e:
+            if verbose:
+                print(f"    [skip] fold {fold+1} validation {strategy_name}: {type(e).__name__}: {e}")
             continue
 
         window_results.append({

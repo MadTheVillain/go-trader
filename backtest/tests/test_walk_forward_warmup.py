@@ -1,12 +1,6 @@
-"""
-Regression tests for issue #303 H3 — walk-forward folds must prepend a
-warmup slice before each train/test window so indicators with long
-lookbacks (e.g. SMA-80) can prime before the first signal bar.
-
-Prior behavior sliced ``df.iloc[start_idx:end_idx]`` directly — an SMA-80
-on a 100-bar window produced all-NaN signals and silently "won" the
-grid with zero trades. The warmup buffer prevents that silent failure.
-"""
+"""Walk-forward folds prepend a warmup slice so long-lookback indicators
+(e.g. SMA-80) prime before the first signal bar. Without warmup, a 100-bar
+fold against an SMA-80 grid produces all-NaN signals and zero trades."""
 import numpy as np
 import pandas as pd
 import pytest
@@ -51,11 +45,8 @@ def test_max_indicator_lookback_zero_for_float_only_grid():
 
 
 def test_sma_80_grid_generates_trades_with_warmup():
-    """Core H3 scenario: SMA-80 on a 100-bar fold. Before the fix the
-    signal column was all-zero (80 NaN bars + 20 too-few-crossings bars),
-    so the fold produced zero trades and sharpe=0 "won" by default. With
-    warmup, the preceding 80 bars prime the indicator and at least one
-    valid crossing occurs across the 5 folds."""
+    """SMA-80 on 100-bar folds should cross at least once across 5 folds
+    when warmup primes the preceding 80 bars."""
     df = _trending_ohlc(n=500)
     param_ranges = {"fast_period": [10, 20], "slow_period": [40, 80]}
 
@@ -75,21 +66,45 @@ def test_sma_80_grid_generates_trades_with_warmup():
     )
 
 
-def test_warmup_does_not_leak_future_data():
-    """Warmup must come from BEFORE the train window, never after. A
-    look-ahead regression would manifest as fold 0 (which has no preceding
-    history) behaving the same as later folds."""
-    df = _trending_ohlc(n=600)
-    param_ranges = {"fast_period": [10], "slow_period": [80]}  # lookback=80
+def test_warmup_primes_slow_sma_on_every_bar():
+    """Counterfactual: on an unprimed 100-bar window, the slow SMA-80 is
+    NaN for 79 bars — only the final 21 bars can emit a crossover. With
+    80 bars of preceding history prepended, every bar of the 100-bar
+    window has a valid slow SMA. Pin that asymmetry — it is the mechanism
+    the warmup fix is buying."""
+    from registry_loader import load_registry
 
+    df = _trending_ohlc(n=500)
+    unprimed = df.iloc[100:200]
+    primed_input = df.iloc[20:200]  # 80 bars warmup + 100 bars window
+
+    reg = load_registry("spot")
+    params = {"fast_period": 10, "slow_period": 80}
+
+    unprimed_out = reg.apply_strategy("sma_crossover", unprimed, params)
+    primed_out = reg.apply_strategy("sma_crossover", primed_input, params).iloc[-100:]
+
+    unprimed_primed_bars = int(unprimed_out["sma_slow"].notna().sum())
+    primed_primed_bars = int(primed_out["sma_slow"].notna().sum())
+
+    assert primed_primed_bars == 100, (
+        f"Primed window should have sma_slow valid on every bar; "
+        f"got {primed_primed_bars}"
+    )
+    assert unprimed_primed_bars <= 21, (
+        f"Unprimed 100-bar window cannot have more than 21 valid "
+        f"sma_slow bars (100 - 79 NaN); got {unprimed_primed_bars}"
+    )
+
+
+def test_warmup_does_not_leak_future_data():
+    """Fold 0 starts at bar 0 and has no preceding history, so warmup is
+    truncated to 0 — later folds get the full 80. Just pin that the runs
+    still complete without crashing under that asymmetry."""
+    df = _trending_ohlc(n=600)
     result = walk_forward_optimize(
-        df, "sma_crossover", param_ranges,
+        df, "sma_crossover", {"fast_period": [10], "slow_period": [80]},
         n_splits=5, train_pct=0.7,
         initial_capital=1000.0, verbose=False,
     )
-
-    # Fold 0 starts at bar 0, so warmup_start = max(0, 0-80) = 0 — no
-    # preceding history to prime with. Fold 1+ gets 80 bars of warmup.
-    # That asymmetry is the contract; just assert fold 1 is in the results
-    # (i.e. folds run and don't crash).
     assert result["n_valid_folds"] >= 2, result

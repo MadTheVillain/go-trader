@@ -1,12 +1,6 @@
-"""
-Regression tests for issue #303 H2 — Backtester commission rate must be
-platform-aware and match ``scheduler/fees.go:CalculatePlatformSpotFee``.
-A strategy that clears fees on Robinhood (0%) must not be taxed at
-BinanceUS's 0.1% in the backtest, and vice versa.
-
-Fee constants here mirror scheduler/fees.go — update both files together
-if the live rate table changes.
-"""
+"""Backtester fees must be platform-aware and match scheduler/fees.go:
+CalculatePlatformSpotFee. If the live rate table changes, update both
+scheduler/fees.go and backtester.PLATFORM_FEE_PCT together."""
 import re
 from pathlib import Path
 
@@ -78,10 +72,7 @@ def test_backtester_uses_platform_fee_by_default():
 
 def test_explicit_commission_overrides_platform():
     bt = Backtester(platform="hyperliquid", commission_pct=0.002)
-    assert bt.commission_pct == pytest.approx(0.002), (
-        "Explicit commission_pct must win over the platform default — "
-        "tests rely on the override to pin zero-fee scenarios."
-    )
+    assert bt.commission_pct == pytest.approx(0.002)
 
 
 def _one_trade_df():

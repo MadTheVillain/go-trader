@@ -1,8 +1,8 @@
-"""
-Regression tests for issue #303 H1 — backtest must be able to load either
-the spot or the futures strategy registry, and the two registries must be
-able to coexist in one process.
-"""
+"""Regression tests: the spot and futures strategy registries must both be
+loadable and coexist in the same process (sys.modules['strategies'] clobber
+is the failure mode this guards against)."""
+import os
+
 import pytest
 
 from registry_loader import load_registry
@@ -44,15 +44,39 @@ def test_unknown_platform_rejected():
 
 
 def test_param_ranges_cover_every_registered_strategy():
-    """Every strategy in either registry should have a DEFAULT_PARAM_RANGES
-    entry. Missing entries fall back to default_params (single-point grid),
-    but the ideal state is coverage — a gap means optimize mode silently
-    degrades to no tuning."""
     spot_ids = set(load_registry("spot").STRATEGY_REGISTRY.keys())
     fut_ids = set(load_registry("futures").STRATEGY_REGISTRY.keys())
-    all_ids = spot_ids | fut_ids
-    missing = all_ids - set(DEFAULT_PARAM_RANGES.keys())
+    missing = (spot_ids | fut_ids) - set(DEFAULT_PARAM_RANGES.keys())
     assert not missing, (
         f"Strategies without DEFAULT_PARAM_RANGES — walk-forward will fall "
         f"back to a single-point grid: {sorted(missing)}"
     )
+
+
+def test_empty_registry_raises():
+    """If the strategy file loaded but produced an empty STRATEGY_REGISTRY
+    (e.g. all decorators accidentally removed), every caller would see
+    'Unknown strategy' indistinguishable from a typo — raise instead."""
+    import tempfile
+    import importlib
+
+    import registry_loader
+
+    with tempfile.TemporaryDirectory() as tmp:
+        empty_dir = os.path.join(tmp, "empty")
+        os.makedirs(empty_dir)
+        with open(os.path.join(empty_dir, "strategies.py"), "w") as f:
+            f.write("STRATEGY_REGISTRY = {}\n")
+
+        orig_dirs = registry_loader._PLATFORM_DIRS.copy()
+        orig_cached = registry_loader._cached.copy()
+        try:
+            registry_loader._PLATFORM_DIRS["_empty"] = empty_dir
+            registry_loader._cached.pop("_empty", None)
+            with pytest.raises(RuntimeError, match="STRATEGY_REGISTRY is missing or empty"):
+                registry_loader.load_registry("_empty")
+        finally:
+            registry_loader._PLATFORM_DIRS.clear()
+            registry_loader._PLATFORM_DIRS.update(orig_dirs)
+            registry_loader._cached.clear()
+            registry_loader._cached.update(orig_cached)

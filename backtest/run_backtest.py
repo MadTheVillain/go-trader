@@ -199,7 +199,7 @@ def run_walk_forward(
     return result
 
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Crypto Trading Bot — Backtester")
     parser.add_argument("--strategy", "-s", default="all",
                         help="Strategy name or 'all'")
@@ -225,7 +225,11 @@ def main():
                         help="Run mode: single/compare/multi/optimize")
     parser.add_argument("--splits", type=int, default=5,
                         help="Walk-forward splits (optimize mode)")
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = _build_parser().parse_args()
 
     reg = load_registry(args.registry)
 

@@ -24,7 +24,6 @@ _cached: dict = {}
 
 def _ensure_import_paths() -> None:
     # Strategy modules resolve ``indicators``, ``amd_ifvg``, etc. via sys.path.
-    # Inject once per process so both registries can import their deps.
     for p in (_SPOT_DIR, _SHARED_DIR, _TOOLS_DIR):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -46,5 +45,13 @@ def load_registry(platform: str = "spot") -> ModuleType:
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # An accidentally-empty registry (e.g. all @register_strategy decorators
+    # removed) otherwise surfaces as "Unknown strategy <name>" at the caller,
+    # indistinguishable from a typo.
+    registry = getattr(mod, "STRATEGY_REGISTRY", None)
+    if not registry:
+        raise RuntimeError(
+            f"{path} loaded but STRATEGY_REGISTRY is missing or empty"
+        )
     _cached[key] = mod
     return mod

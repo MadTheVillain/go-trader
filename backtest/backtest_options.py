@@ -20,24 +20,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 from pricing import bs_price, bs_price_and_greeks  # type: ignore
 
 
-# Deribit strike-grid granularity per underlying — mirrors
-# platforms/deribit/adapter.py:get_real_strike fallback. A backtest that
-# rounds BTC strikes to $100 (previous behavior) requests strikes that
-# don't exist on Deribit, producing premiums at non-listed levels.
+# Deribit strike-grid granularity per underlying. Matches the fallback in
+# platforms/deribit/adapter.py:get_real_strike — BTC rounds to the nearest
+# $1000; everything else (ETH, SOL, DOGE, ...) rounds to the nearest $50.
 ADAPTER_STRIKE_STEP = {
     "BTC": 1000.0,
-    "ETH": 50.0,
 }
+DEFAULT_STRIKE_STEP = 50.0
 
 
 def adapter_strike(underlying: str, target_strike: float) -> float:
     """Round ``target_strike`` to the nearest listed strike for ``underlying``.
 
-    Matches ``DeribitExchangeAdapter.get_real_strike`` fallback logic so
-    backtest fills land on the same price grid the live system would.
-    Unknown underlyings fall back to BTC's $1000 grid.
+    Unknown underlyings use the $50 default — same behavior as the live
+    Deribit adapter, which only special-cases BTC.
     """
-    step = ADAPTER_STRIKE_STEP.get(underlying.upper(), ADAPTER_STRIKE_STEP["BTC"])
+    step = ADAPTER_STRIKE_STEP.get(underlying.upper(), DEFAULT_STRIKE_STEP)
     return round(target_strike / step) * step
 
 
@@ -66,9 +64,7 @@ def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d") ->
 
 def black_scholes_price(spot: float, strike: float, dte_days: float, vol: float,
                          risk_free: float = 0.05, option_type: str = "call") -> float:
-    """Thin wrapper around shared_tools.pricing.bs_price — kept so existing
-    callers keep working. New code should call ``bs_price_and_greeks`` to
-    also surface delta/gamma for the trade log."""
+    """Back-compat wrapper; new code should call ``bs_price_and_greeks``."""
     return bs_price(spot, strike, dte_days, vol, risk_free, option_type)
 
 
@@ -241,9 +237,7 @@ class OptionsBacktester:
             # Strategy logic
             if len(self.positions) < self.max_positions:
                 if iv_rank > 75:
-                    # High IV → sell strangle. Strikes land on the adapter's
-                    # listed-strike grid (BTC $1000, ETH $50) so backtest and
-                    # live request the same instruments.
+                    # High IV → sell strangle on the adapter's listed-strike grid.
                     call_strike = adapter_strike(underlying, spot * 1.10)
                     put_strike = adapter_strike(underlying, spot * 0.90)
                     dte = 30
