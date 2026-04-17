@@ -505,6 +505,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		}
 		RecordTrade(s, trade)
 		RecordTradeResult(&s.RiskState, pnl)
+		recordClosedOptionPosition(s, pos, closePrice, pnl, "circuit_breaker", now)
 		delete(s.OptionPositions, id)
 	}
 }

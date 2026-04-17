@@ -99,6 +99,9 @@ type StrategyState struct {
 	// clears the buffer on successful commit. Not serialized to JSON state
 	// files — history lives exclusively in SQLite. (#288)
 	ClosedPositions []ClosedPosition `json:"-"`
+	// ClosedOptionPositions mirrors ClosedPositions for option-position
+	// lifecycle tracking; flushed to closed_option_positions table. (#288)
+	ClosedOptionPositions []ClosedOptionPosition `json:"-"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
