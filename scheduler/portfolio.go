@@ -188,9 +188,13 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // virtual state permanently behind actual exchange positions (#298).
 //
 // posSide is "" when no position exists; "long" or "short" otherwise. The
-// conditions here MUST mirror the skip conditions at the top of each branch
-// in ExecutePerpsSignal — if a new no-op path is added there, add it here
-// too.
+// conditions here mirror the SIDE-BASED skip conditions in
+// ExecutePerpsSignal (the "already long, skipping buy" and "no long position
+// to sell" branches). The `s.Cash < 1` branch inside the open-long path is
+// NOT mirrored here because cash after a flip-close leg cannot be derived
+// from (signal, posSide) alone — live callers already guard cash upstream
+// before placing the order (see runHyperliquidExecuteOrder). If a new
+// side-based no-op branch is added to ExecutePerpsSignal, add it here too.
 func PerpsOrderSkipReason(signal int, posSide string) string {
 	switch signal {
 	case 1:
