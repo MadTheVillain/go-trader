@@ -1,12 +1,9 @@
 # Theta Harvesting Backtest Results
 
-> ⚠️ **SUPERSEDED — 2026-04-17.** These results were produced with the
-> pre-fix volatility and IV-rank math (issue #302). The old `calc_historical_vol`
-> used simple returns and `sum(r**2)/n` (not variance around the mean), and
-> `calc_iv_rank` returned an IV *ratio* rather than a percentile rank. Both
-> inflated Black-Scholes premiums and skewed entry timing, so the numbers
-> below should not be treated as live-comparable. Rerun after the #302 C2/C3
-> fixes ship before using any figure in this document.
+> ⚠️ **SUPERSEDED — 2026-04-17.** These figures were produced against a
+> pre-issue-#302 version of `calc_historical_vol` and `calc_iv_rank` that
+> inflated premiums and skewed entry timing. Rerun `backtest_theta.py`
+> against the current implementations before citing any number below.
 
 **Date:** 2026-02-11
 **Data:** Binance US, 2023-01-01 to 2026-02-11 (1,048 days)

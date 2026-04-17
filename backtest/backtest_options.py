@@ -98,7 +98,6 @@ def calc_iv_rank(closes: list, recent_window: int = 14,
     merely 2× historical vol rather than at a true lookback high. That
     triggered strangles at entirely different moments than live.
     """
-    # Need enough bars for a full rolling window plus lookback.
     if len(closes) < recent_window + lookback_days + 1:
         return 50.0
 
@@ -107,18 +106,12 @@ def calc_iv_rank(closes: list, recent_window: int = 14,
     ]
 
     def _rolling_vol(end_idx: int) -> float:
-        # Annualised realised vol of the ``recent_window`` log returns ending
-        # at index ``end_idx`` (inclusive). Uses variance around the sample
-        # mean — same formula family as calc_historical_vol.
         window = log_returns[end_idx - recent_window + 1: end_idx + 1]
         mean = sum(window) / len(window)
         variance = sum((r - mean) ** 2 for r in window) / len(window)
         return math.sqrt(variance * 365)
 
-    # Current realised vol — most recent full window.
     current = _rolling_vol(len(log_returns) - 1)
-
-    # Trailing rolling-vol distribution over the lookback window.
     history = [
         _rolling_vol(end)
         for end in range(
@@ -129,7 +122,7 @@ def calc_iv_rank(closes: list, recent_window: int = 14,
 
     lo, hi = min(history), max(history)
     if hi - lo <= 1e-12:
-        # Vol has been constant across the lookback — rank is ill-defined.
+        # Degenerate range — rank is ill-defined, return neutral.
         return 50.0
 
     rank = (current - lo) / (hi - lo) * 100.0

@@ -84,16 +84,14 @@ class Backtester:
 
         Execution model matches the live scheduler: a signal produced by the
         close of bar t is read after the bar finishes and filled at bar t+1's
-        open. The backtester therefore shifts the signal column forward by one
-        bar and fills at ``row['open']`` when available (fallback: close).
+        open (no look-ahead bias). Falls back to close when an ``open`` column
+        is not present.
 
         Returns dict with all performance metrics.
         """
         if "signal" not in df.columns:
             raise ValueError("DataFrame must have a 'signal' column")
 
-        # Shift signals forward 1 bar so a signal at bar t executes on bar t+1
-        # (no look-ahead bias). Fill resulting NaN at bar 0 with 0 = hold.
         df = df.copy()
         df["signal"] = df["signal"].shift(1).fillna(0)
 
@@ -110,11 +108,9 @@ class Backtester:
             mark_price = row["close"]
             signal = row["signal"]
 
-            # Calculate current equity (mark-to-close for the equity curve)
             equity = cash + position * mark_price
             equity_curve.append({"date": idx, "equity": equity})
 
-            # Process signals — fill at bar open (or close if open missing)
             if signal == 1 and position == 0:
                 # BUY — go long with all available cash
                 effective_price = fill_price * (1 + self.slippage_pct)

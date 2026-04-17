@@ -1,10 +1,9 @@
 """
-Regression tests for #302 C1: look-ahead bias in the backtester.
+Regression tests for issue #302 — Backtester fill alignment.
 
-Live scheduler behavior: a signal computed on the close of bar t is read after
-the bar closes and filled as a market order that lands at ~bar t+1's open.
-The backtester must match this — filling at bar t's close on the same bar the
-signal was produced creates a free look-ahead.
+Live scheduler reads a completed bar's close-signal and market-orders that
+lands at the next bar's open. Backtests must match — filling at the signal
+bar's close is free look-ahead.
 """
 import pandas as pd
 import pytest
@@ -28,10 +27,7 @@ def _make_df(opens, highs, lows, closes, signals):
 
 
 def test_fill_uses_next_bar_open_not_signal_bar_close():
-    """A buy signal on bar 2 must fill at bar 3's open, not bar 2's close."""
-    # Crafted prices: bar 2 close (=100) is distinct from bar 3 open (=110).
-    # If the backtester incorrectly fills at close, the entry price is 100.
-    # Correct behavior (fill at next bar's open) puts the entry at 110.
+    """Buy signal on bar 2 must fill at bar 3's open, not bar 2's close."""
     opens = [100, 100, 100, 110, 110, 110]
     highs = [101, 101, 101, 111, 111, 111]
     lows = [99, 99, 99, 109, 109, 109]
@@ -45,8 +41,12 @@ def test_fill_uses_next_bar_open_not_signal_bar_close():
     assert len(results["trades"]) == 1
     trade = results["trades"][0]
     assert trade["entry_price"] == pytest.approx(110.0, rel=1e-9), (
-        "Entry price must come from the bar *after* the signal bar's open "
-        "(110), not the signal bar's close (100). A 100 here is look-ahead bias."
+        "Entry must fill at the bar after the signal bar's open (110), "
+        "not the signal bar's close (100) — that would be look-ahead bias."
+    )
+    assert trade["shares"] == pytest.approx(1000.0 / 110.0, rel=1e-9), (
+        "Share count must divide available cash by the actual fill price "
+        "(110), not the signal-bar close (100)."
     )
 
 
@@ -64,19 +64,19 @@ def test_exit_uses_next_bar_open_not_signal_bar_close():
 
     assert len(results["trades"]) == 1
     trade = results["trades"][0]
-    # Entry is buy at bar 2's open (next bar after signal bar 1) → 100.
     assert trade["entry_price"] == pytest.approx(100.0, rel=1e-9)
-    # Exit is sell at bar 4's open (next bar after signal bar 3) → 200,
-    # NOT bar 3's close (= 100, which would show a 0% trade — look-ahead-free
-    # exit sees the big gap up).
     assert trade["exit_price"] == pytest.approx(200.0, rel=1e-9), (
-        "Exit must fill at the bar following the sell-signal bar's open (200), "
+        "Exit must fill at the bar after the sell-signal bar's open (200), "
         "not the signal bar's close (100)."
+    )
+    expected_final_cash = 1000.0 * (200.0 / 100.0)
+    assert results["final_capital"] == pytest.approx(expected_final_cash, rel=1e-9), (
+        "Final cash should double with the 2x gap-up fill, not stay flat."
     )
 
 
 def test_falls_back_to_close_when_open_column_missing():
-    """Legacy demos/tests feed only a 'close' column — preserve that path."""
+    """Legacy demos feed only 'close' — preserve that path (shift still applies)."""
     closes = [100, 100, 100, 110, 110, 110]
     signals = [0, 0, 1, 0, 0, -1]
     idx = pd.date_range("2024-01-01", periods=len(closes), freq="D")
@@ -86,13 +86,11 @@ def test_falls_back_to_close_when_open_column_missing():
     results = bt.run(df, strategy_name="legacy-close-only", save=False)
 
     assert len(results["trades"]) == 1
-    # With no open column we fall back to close — signal shifted by 1 bar means
-    # entry is at bar 3's close (=110), not bar 2's close (=100).
     assert results["trades"][0]["entry_price"] == pytest.approx(110.0, rel=1e-9)
 
 
 def test_signal_on_final_bar_never_fills():
-    """A signal emitted on the last bar has no following bar to fill on."""
+    """Signal on the last bar has no following bar to fill on."""
     opens = [100, 100, 100]
     closes = [100, 100, 100]
     signals = [0, 0, 1]
@@ -104,6 +102,57 @@ def test_signal_on_final_bar_never_fills():
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
     results = bt.run(df, strategy_name="last-bar-signal", save=False)
 
-    assert results["total_trades"] == 0, (
-        "Signal on the last bar has no next bar to fill on — must not trade."
+    assert results["total_trades"] == 0
+
+
+def test_signal_on_bar_zero_fills_on_bar_one():
+    """A buy at raw bar 0 is shifted to bar 1 and fills at bar 1's open."""
+    opens = [100, 200, 200, 200, 200]
+    closes = [100, 200, 200, 200, 200]
+    signals = [1, 0, 0, 0, -1]
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    df = pd.DataFrame(
+        {"open": opens, "close": closes, "signal": signals}, index=idx
     )
+
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
+    results = bt.run(df, strategy_name="bar-zero-signal", save=False)
+
+    assert len(results["trades"]) == 1
+    # Buy signal on raw bar 0 → shifted to bar 1 → fills at bar 1's open = 200.
+    # A bug that drops the bar-0 signal (e.g. starts the loop at i=1) would
+    # produce 0 trades.
+    assert results["trades"][0]["entry_price"] == pytest.approx(200.0, rel=1e-9)
+
+
+def test_buy_signal_while_long_is_ignored():
+    """Repeat buy must not double-up an existing long position."""
+    opens = [100, 100, 100, 100, 100, 100]
+    closes = [100, 100, 100, 100, 100, 100]
+    signals = [0, 1, 1, 0, 0, -1]
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    df = pd.DataFrame(
+        {"open": opens, "close": closes, "signal": signals}, index=idx
+    )
+
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
+    results = bt.run(df, strategy_name="repeat-buy", save=False)
+
+    assert results["total_trades"] == 1
+
+
+def test_sell_signal_while_flat_is_ignored():
+    """Sell signal with no open position must not create a phantom trade."""
+    opens = [100, 100, 100, 100]
+    closes = [100, 100, 100, 100]
+    signals = [0, -1, 0, 0]
+    idx = pd.date_range("2024-01-01", periods=4, freq="D")
+    df = pd.DataFrame(
+        {"open": opens, "close": closes, "signal": signals}, index=idx
+    )
+
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
+    results = bt.run(df, strategy_name="sell-while-flat", save=False)
+
+    assert results["total_trades"] == 0
+    assert results["final_capital"] == pytest.approx(1000.0, rel=1e-9)
