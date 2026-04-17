@@ -510,6 +510,34 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 	}
 }
 
+// perpsMarginDeployed returns the sum of margin (notional / leverage) across
+// open perps positions in the strategy. Perps positions are identified by
+// Multiplier > 0 AND Leverage > 0 — futures also set Multiplier > 0 but do
+// not set Leverage, so they are excluded. Falls back to AvgCost when the
+// symbol's mark price is missing or non-positive. Returns 0 when no perps
+// positions are open or no leverage info is available. (#292)
+func perpsMarginDeployed(s *StrategyState, prices map[string]float64) float64 {
+	var total float64
+	for sym, pos := range s.Positions {
+		if pos.Multiplier <= 0 || pos.Leverage <= 0 {
+			continue
+		}
+		price, ok := prices[sym]
+		if !ok || price <= 0 {
+			price = pos.AvgCost
+		}
+		if price <= 0 {
+			continue
+		}
+		notional := pos.Quantity * price
+		if notional <= 0 {
+			continue
+		}
+		total += notional / pos.Leverage
+	}
+	return total
+}
+
 // CheckRisk evaluates risk state and returns whether trading is allowed.
 func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger) (bool, string) {
 	r := &s.RiskState
@@ -531,15 +559,43 @@ func CheckRisk(s *StrategyState, portfolioValue float64, prices map[string]float
 		r.PeakValue = portfolioValue
 	}
 
-	// Check drawdown
+	// Check drawdown.
+	//
+	// For perps strategies with open leveraged positions, drawdown is measured
+	// against deployed margin (capital at risk) rather than portfolio value.
+	// A 20x leveraged position only puts ~5% of notional at risk as margin;
+	// using the full portfolio as denominator under-states near-100% margin
+	// losses as a few-percent drawdown, so the circuit breaker would only fire
+	// after the position had already been liquidated. See #292.
+	//
+	// When the strategy has no perps margin deployed (all positions closed,
+	// leverage unset, or non-perps type), we fall back to the classic
+	// peak-relative drawdown so strategies without leverage behave identically
+	// to before.
 	if r.PeakValue > 0 {
-		r.CurrentDrawdownPct = ((r.PeakValue - portfolioValue) / r.PeakValue) * 100
+		loss := r.PeakValue - portfolioValue
+		if loss < 0 {
+			loss = 0
+		}
+		denom := r.PeakValue
+		denomLabel := "peak"
+		if s.Type == "perps" {
+			if margin := perpsMarginDeployed(s, prices); margin > 0 {
+				denom = margin
+				denomLabel = "margin"
+			}
+		}
+		if denom > 0 {
+			r.CurrentDrawdownPct = (loss / denom) * 100
+		} else {
+			r.CurrentDrawdownPct = 0
+		}
 		if r.TotalTrades > 0 && r.CurrentDrawdownPct > r.MaxDrawdownPct {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
 			forceCloseAllPositions(s, prices, logger)
-			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f)",
-				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue)
+			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
+				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
 		}
 	}
 
