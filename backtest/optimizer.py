@@ -170,19 +170,24 @@ def walk_forward_optimize(
                   f"Train {train_df.index[0].strftime('%Y-%m-%d')}→{train_df.index[-1].strftime('%Y-%m-%d')} "
                   f"| Test {test_df.index[0].strftime('%Y-%m-%d')}→{test_df.index[-1].strftime('%Y-%m-%d')}")
 
+        # Pass the boundary bar (last warmup row) into the Backtester along
+        # with the train rows. Its raw signal then becomes row 1's shifted
+        # signal inside Backtester.run, so a BUY/SELL emitted on the final
+        # warmup bar fires on the first train bar's open — matching live.
+        # The warmup scan runs on bars strictly before the boundary so it
+        # doesn't double-count that signal.
+        train_boundary_idx = max(train_trim - 1, 0)
+
         # Optimize on training data
         best_metric = -np.inf
         best_params = None
         for params in param_grid:
             try:
                 signals_ext = apply_strategy(strategy_name, train_ext_df, params)
-                signals_df = signals_ext.iloc[train_trim:]
-                # Carry warmup position state so SELL signals in the first
-                # train bars close a real warmup entry instead of being
-                # dropped as "sell while flat".
+                signals_df = signals_ext.iloc[train_boundary_idx:]
                 train_seed = warmup_exit_long_entry(
-                    signals_ext.iloc[:train_trim], bt.slippage_pct,
-                ) if train_trim else None
+                    signals_ext.iloc[:train_boundary_idx], bt.slippage_pct,
+                ) if train_boundary_idx else None
                 result = bt.run(signals_df, strategy_name=strategy_name,
                               symbol=symbol, timeframe=timeframe,
                               params=params, save=False,
@@ -200,12 +205,13 @@ def walk_forward_optimize(
             continue
 
         # Validate on test data with best params
+        test_boundary_idx = max(test_trim - 1, 0)
         try:
             test_signals_ext = apply_strategy(strategy_name, test_ext_df, best_params)
-            test_signals = test_signals_ext.iloc[test_trim:]
+            test_signals = test_signals_ext.iloc[test_boundary_idx:]
             test_seed = warmup_exit_long_entry(
-                test_signals_ext.iloc[:test_trim], bt.slippage_pct,
-            ) if test_trim else None
+                test_signals_ext.iloc[:test_boundary_idx], bt.slippage_pct,
+            ) if test_boundary_idx else None
             test_result = bt.run(test_signals, strategy_name=strategy_name,
                                symbol=symbol, timeframe=timeframe,
                                params=best_params, save=False,

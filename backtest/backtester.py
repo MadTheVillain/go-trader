@@ -124,6 +124,13 @@ class Backtester:
             walk-forward position state across a fold boundary so SELL
             signals in the first train bars actually close the warmup
             position instead of being dropped as "sell while flat".
+            Note: ``equity[0]`` for a seeded run reflects the starting
+            position's mark-to-market (``shares * close[0]``), not
+            ``initial_capital``. ``_calculate_metrics`` anchors
+            ``total_return_pct`` and ``max_drawdown_pct`` at
+            ``self.initial_capital`` so the baseline is consistent with
+            unseeded runs, while ``sharpe`` and ``volatility`` are
+            computed from ``pct_change()`` and are unaffected.
 
         Returns dict with all performance metrics.
         """
@@ -225,8 +232,11 @@ class Backtester:
         """Calculate comprehensive performance metrics."""
         equity = equity_df["equity"]
 
-        # Returns
-        total_return = (equity.iloc[-1] - equity.iloc[0]) / equity.iloc[0]
+        # Anchor return + drawdown at initial_capital so seeded runs (where
+        # equity[0] reflects the starting_long mark-to-market, not the true
+        # pre-trade balance) don't distort the baseline. For non-seeded runs
+        # this is a no-op because equity[0] == initial_capital.
+        total_return = (equity.iloc[-1] - self.initial_capital) / self.initial_capital
 
         # Annualized return
         days = (df.index[-1] - df.index[0]).days
@@ -249,8 +259,11 @@ class Backtester:
         else:
             sortino = 0.0
 
-        # Max Drawdown
-        cummax = equity.cummax()
+        # Max Drawdown — floor the running peak at initial_capital so the
+        # baseline is always the true starting balance, not a seeded
+        # mark-to-market that may already be below initial_capital.
+        cummax_raw = equity.cummax()
+        cummax = cummax_raw.where(cummax_raw >= self.initial_capital, self.initial_capital)
         drawdown = (equity - cummax) / cummax
         max_drawdown = drawdown.min()
 

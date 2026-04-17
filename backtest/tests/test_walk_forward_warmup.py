@@ -185,3 +185,98 @@ def test_no_seed_when_fold_zero_has_no_warmup():
     error."""
     empty = pd.DataFrame(columns=["open", "close", "signal"])
     assert warmup_exit_long_entry(empty, slippage_pct=0.0) is None
+
+
+def test_warmup_exit_long_entry_applies_slippage():
+    """Seed entry_price must include the slippage band on the BUY leg,
+    matching Backtester.run's ``fill_price * (1 + slippage_pct)``.
+    Otherwise the carried-over entry price is too low and the seeded
+    fold's P&L is systematically inflated."""
+    df = _warmup_train_df()
+    seed = warmup_exit_long_entry(df.iloc[:30], slippage_pct=0.001)
+    assert seed is not None
+    # BUY on bar 5 (raw), shifted to bar 6 (fills at bar 6 open = 100.0),
+    # slippage adds 0.1% → 100.1.
+    assert seed["entry_price"] == pytest.approx(100.1)
+
+
+def test_warmup_exit_long_entry_ignores_repeat_buy_while_long():
+    """Matches Backtester semantics: a BUY while already long is dropped.
+    Regression guard: the scan must not overwrite the first entry price
+    with a later BUY, otherwise the carried P&L anchors to the wrong
+    price."""
+    opens = [100.0, 100.0, 100.0, 100.0, 100.0, 150.0, 150.0, 150.0]
+    closes = opens[:]
+    signals = [1, 0, 0, 1, 0, 0, 0, 0]  # BUY at bar 0 and bar 3
+    idx = pd.date_range("2024-01-01", periods=8, freq="D")
+    df = pd.DataFrame(
+        {"open": opens, "close": closes, "signal": signals}, index=idx,
+    )
+    seed = warmup_exit_long_entry(df, slippage_pct=0.0)
+    assert seed is not None
+    # First BUY at bar 0 shifts to fill at bar 1 open = 100.0. Second BUY
+    # at bar 3 must be ignored (already long).
+    assert seed["entry_price"] == pytest.approx(100.0)
+
+
+def test_boundary_bar_signal_fires_on_first_train_bar():
+    """Regression for the last-warmup-bar gap. A SELL on the final warmup
+    bar (bar 29) must fill on the first train bar's open (bar 30 — a
+    $200 gap-up). Previously both the scan shift and the Backtester shift
+    dropped this signal, so the warmup BUY was never closed and force-
+    closed at the train's final bar instead."""
+    opens = [100.0] * 30 + [200.0] * 30
+    closes = opens[:]
+    signals = [0] * 60
+    signals[5] = 1    # BUY in warmup
+    signals[29] = -1  # SELL on LAST warmup bar
+    idx = pd.date_range("2024-01-01", periods=60, freq="D")
+    df = pd.DataFrame(
+        {"open": opens, "close": closes, "signal": signals}, index=idx,
+    )
+
+    # Optimizer's new slicing: scan warmup strictly before the boundary
+    # bar, pass the boundary bar (+ train) to Backtester.
+    boundary = 29
+    warmup_scan = df.iloc[:boundary]
+    backtester_df = df.iloc[boundary:]
+
+    seed = warmup_exit_long_entry(warmup_scan, slippage_pct=0.0)
+    assert seed is not None, "warmup BUY on bar 5 must carry forward"
+    assert seed["entry_price"] == pytest.approx(100.0)
+
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
+    result = bt.run(backtester_df, save=False, starting_long=seed)
+
+    # SELL at bar 29 shifts into Backtester's row 1 (bar 30) and fills at
+    # bar 30's open = 200. Warmup entry was 100, so 2× return.
+    assert result["total_trades"] == 1
+    trade = result["trades"][0]
+    assert trade["entry_price"] == pytest.approx(100.0)
+    assert trade["exit_price"] == pytest.approx(200.0)
+    # Anchor check: total_return_pct should be ~100% (doubled capital),
+    # not a shifted-baseline number.
+    assert result["total_return_pct"] == pytest.approx(100.0, abs=0.1)
+
+
+def test_seeded_metrics_anchor_at_initial_capital():
+    """Seeded run's equity[0] is mark-to-market, not initial_capital.
+    _calculate_metrics must anchor total_return_pct and max_drawdown_pct
+    at self.initial_capital so the baseline matches unseeded runs."""
+    # 10 flat-price bars, no signals. Seed says "already long at $100".
+    # With flat $100 prices: shares = 1000/100 = 10. equity each bar = 10
+    # * 100 = 1000 = initial_capital. Final position force-closed at 1000.
+    # total_return should be 0, drawdown 0.
+    opens = closes = [100.0] * 10
+    signals = [0] * 10
+    idx = pd.date_range("2024-01-01", periods=10, freq="D")
+    df = pd.DataFrame(
+        {"open": opens, "close": closes, "signal": signals}, index=idx,
+    )
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
+    result = bt.run(
+        df, save=False,
+        starting_long={"entry_price": 100.0, "entry_date": idx[0]},
+    )
+    assert result["total_return_pct"] == pytest.approx(0.0, abs=0.01)
+    assert result["max_drawdown_pct"] == pytest.approx(0.0, abs=0.01)
