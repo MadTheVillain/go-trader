@@ -2,11 +2,59 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 )
 
 // maxTradeHistory is the maximum number of trades to retain per strategy.
 const maxTradeHistory = 1000
+
+// tradeRecorder is the package-level hook for immediate trade persistence (#289).
+// main.go sets this to StateDB.InsertTrade after OpenStateDB; when nil (tests,
+// early boot, or persistence failure), RecordTrade still appends in-memory and
+// the cycle-end SaveStateWithDB acts as a safety net.
+//
+// Test caveat: tests that swap this hook (via prev := tradeRecorder; tradeRecorder
+// = fn; t.Cleanup(...)) must NOT use t.Parallel() — the swap mutates package
+// state and will race. Same applies to tradePersistWarn below. If concurrent
+// tests are ever needed, move the hooks onto StateDB (or an injected struct)
+// instead of keeping them global.
+var tradeRecorder func(strategyID string, trade Trade) error
+
+// tradePersistWarn is the operator-visible warning hook for RecordTrade failures
+// (#289 observability follow-up). main.go sets this after MultiNotifier is
+// constructed to route warnings to owner DM. When nil, RecordTrade falls back
+// to stderr — important for early-boot failures before the notifier exists.
+var tradePersistWarn func(msg string)
+
+// RecordTrade appends a trade to a strategy's in-memory TradeHistory and, when
+// the tradeRecorder hook is set, immediately persists it to SQLite so trades
+// survive mid-cycle crashes (#289). On successful persist the trade is marked
+// persisted=true so SaveState skips it on the cycle-end flush; on failure the
+// row stays persisted=false and SaveState will retry, even if later trades
+// have already been persisted with greater timestamps.
+//
+// Persistence errors are surfaced to the operator via tradePersistWarn (owner
+// DM) when available, always logged to stderr, and never abort execution —
+// in-memory state remains intact.
+func RecordTrade(s *StrategyState, trade Trade) {
+	if trade.StrategyID == "" {
+		trade.StrategyID = s.ID
+	}
+	s.TradeHistory = append(s.TradeHistory, trade)
+	if tradeRecorder == nil {
+		return
+	}
+	if err := tradeRecorder(s.ID, trade); err != nil {
+		msg := fmt.Sprintf("immediate trade persist failed for %s: %v", s.ID, err)
+		fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
+		if tradePersistWarn != nil {
+			tradePersistWarn(msg)
+		}
+		return
+	}
+	s.TradeHistory[len(s.TradeHistory)-1].persisted = true
+}
 
 // ReconciliationGap tracks the drift between virtual per-strategy positions and
 // the actual on-chain position for a coin that is traded by multiple strategies
