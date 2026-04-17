@@ -183,6 +183,25 @@ func (sdb *StateDB) Close() error {
 	return sdb.db.Close()
 }
 
+// InsertTrade persists a single trade row immediately (#289). This is invoked
+// via the tradeRecorder hook the moment a trade is appended to TradeHistory,
+// so trades survive mid-cycle crashes even if SaveState never runs.
+func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	_, err := sdb.db.Exec(`INSERT INTO trades
+		(strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.Side,
+		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
+		trade.ExchangeOrderID, trade.ExchangeFee)
+	if err != nil {
+		return fmt.Errorf("insert trade for %s: %w", strategyID, err)
+	}
+	return nil
+}
+
 // SaveState writes the full AppState to SQLite within a single transaction.
 func (sdb *StateDB) SaveState(state *AppState) error {
 	tx, err := sdb.db.Begin()

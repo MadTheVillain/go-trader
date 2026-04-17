@@ -8,6 +8,30 @@ import (
 // maxTradeHistory is the maximum number of trades to retain per strategy.
 const maxTradeHistory = 1000
 
+// tradeRecorder is the package-level hook for immediate trade persistence (#289).
+// main.go sets this to StateDB.InsertTrade after OpenStateDB; when nil (tests,
+// early boot, or persistence failure), RecordTrade still appends in-memory and
+// the cycle-end SaveStateWithDB acts as a safety net.
+var tradeRecorder func(strategyID string, trade Trade) error
+
+// RecordTrade appends a trade to a strategy's in-memory TradeHistory and, when
+// the tradeRecorder hook is set, immediately persists it to SQLite so trades
+// survive mid-cycle crashes (#289). Persistence errors are logged but do not
+// abort execution — in-memory state remains intact and the end-of-cycle save
+// will catch up the row on the next successful flush.
+func RecordTrade(s *StrategyState, trade Trade) {
+	if trade.StrategyID == "" {
+		trade.StrategyID = s.ID
+	}
+	s.TradeHistory = append(s.TradeHistory, trade)
+	if tradeRecorder == nil {
+		return
+	}
+	if err := tradeRecorder(s.ID, trade); err != nil {
+		fmt.Printf("[state] WARN: immediate trade persist failed for %s: %v\n", s.ID, err)
+	}
+}
+
 // ReconciliationGap tracks the drift between virtual per-strategy positions and
 // the actual on-chain position for a coin that is traded by multiple strategies
 // on the same shared wallet (#258). When two strategies trade the same coin,

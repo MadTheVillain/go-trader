@@ -118,7 +118,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				TradeType:  "perps",
 				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
@@ -167,7 +167,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			TradeType:  "perps",
 			Details:    fmt.Sprintf("Open long %.6f @ $%.2f (%.1fx, fee $%.2f)", qty, execPrice, leverage, fee),
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (%.1fx, notional $%.2f, fee $%.2f)", symbol, qty, execPrice, leverage, notional, fee)
 		tradesExecuted++
 
@@ -194,7 +194,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 				TradeType:  "perps",
 				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
@@ -249,7 +249,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 				TradeType:  "spot",
 				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
@@ -295,7 +295,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 			TradeType:  "spot",
 			Details:    fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee),
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, tradeCost+fee)
 		tradesExecuted++
 
@@ -324,7 +324,7 @@ func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float6
 				TradeType:  "spot",
 				Details:    fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, pos.Quantity, execPrice, fee, pnl)
@@ -375,7 +375,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				TradeType:  "futures",
 				Details:    fmt.Sprintf("Close short %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			delete(s.Positions, symbol)
 			logger.Info("Closed short %s %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
@@ -433,7 +433,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 			TradeType:  "futures",
 			Details:    fmt.Sprintf("Open long %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
 		}
-		s.TradeHistory = append(s.TradeHistory, trade)
+		RecordTrade(s, trade)
 		logger.Info("BUY %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
 		tradesExecuted++
 
@@ -462,7 +462,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				TradeType:  "futures",
 				Details:    fmt.Sprintf("Close long %d contracts, PnL: $%.2f (fee $%.2f)", contracts, pnl, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)
 			delete(s.Positions, symbol)
 			logger.Info("SELL %s: %d contracts @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, contracts, execPrice, fee, pnl)
@@ -521,7 +521,7 @@ func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price flo
 				TradeType:  "futures",
 				Details:    fmt.Sprintf("Open short %d contracts @ $%.2f (fee $%.2f)", contracts, execPrice, fee),
 			}
-			s.TradeHistory = append(s.TradeHistory, trade)
+			RecordTrade(s, trade)
 			logger.Info("SHORT %s: %d contracts @ $%.2f (fee $%.2f)", symbol, contracts, execPrice, fee)
 			tradesExecuted++
 		}

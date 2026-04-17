@@ -39,6 +39,11 @@ func main() {
 	}
 	defer stateDB.Close()
 
+	// Wire the immediate trade-persistence hook (#289) so every trade is
+	// written to SQLite the moment it is appended to TradeHistory — this
+	// survives mid-cycle crashes that would otherwise lose the in-memory batch.
+	tradeRecorder = stateDB.InsertTrade
+
 	// Load state: SQLite primary, JSON fallback with auto-migration.
 	state, err := LoadStateWithDB(cfg, stateDB)
 	if err != nil {
