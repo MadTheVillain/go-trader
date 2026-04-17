@@ -10,14 +10,30 @@ import math
 from datetime import datetime
 from typing import Callable, Optional
 
-# Resolve shared modules so backtest can run without PYTHONPATH hacks
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 import numpy as np
 import pandas as pd
 
 from storage import store_backtest_result
+
+
+# Taker fee rates per platform — mirrors scheduler/fees.go:CalculatePlatformSpotFee
+# and related constants. test_platform_fees.py scrapes fees.go to enforce parity.
+PLATFORM_FEE_PCT = {
+    "binanceus":   0.001,    # BinanceSpotFeePct
+    "hyperliquid": 0.00035,  # HyperliquidTakerFeePct
+    "robinhood":   0.0,      # RobinhoodCryptoFeePct (no commission)
+    "luno":        0.01,     # LunoTakerFeePct
+    "okx":         0.001,    # OKXSpotTakerFeePct
+    "okx-perps":   0.0005,   # OKXPerpsTakerFeePct
+}
+
+
+def fee_pct_for_platform(platform: str) -> float:
+    """Return taker fee rate for ``platform``; defaults to BinanceUS spot rate
+    (0.1%) to match ``scheduler/fees.go:CalculateSpotFee``."""
+    return PLATFORM_FEE_PCT.get(platform, PLATFORM_FEE_PCT["binanceus"])
 
 
 class Trade:
@@ -63,21 +79,34 @@ class Backtester:
         results = bt.run(df_with_signals, strategy_name="SMA Crossover")
     """
 
-    def __init__(self, initial_capital: float = 1000.0, commission_pct: float = 0.001,
-                 slippage_pct: float = 0.0005):
+    def __init__(self, initial_capital: float = 1000.0,
+                 commission_pct: Optional[float] = None,
+                 slippage_pct: float = 0.0005,
+                 platform: str = "binanceus"):
         """
         Args:
-            initial_capital: Starting portfolio value
-            commission_pct: Commission per trade as fraction (0.001 = 0.1%)
-            slippage_pct: Slippage per trade as fraction (0.0005 = 0.05%)
+            initial_capital: Starting portfolio value.
+            commission_pct: Commission per trade as fraction. If ``None``,
+                derived from ``platform`` using ``PLATFORM_FEE_PCT`` (which
+                mirrors ``scheduler/fees.go``). Pass an explicit value to
+                override (e.g. in tests).
+            slippage_pct: Slippage per trade as fraction (0.0005 = 5 bps).
+            platform: Exchange fee model — one of ``PLATFORM_FEE_PCT`` keys.
+                Unknown platforms fall back to BinanceUS (0.1%) with no
+                warning, matching the Go dispatch default.
         """
         self.initial_capital = initial_capital
-        self.commission_pct = commission_pct
+        self.platform = platform
+        self.commission_pct = (
+            commission_pct if commission_pct is not None
+            else fee_pct_for_platform(platform)
+        )
         self.slippage_pct = slippage_pct
 
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
-            params: Optional[dict] = None, save: bool = True) -> dict:
+            params: Optional[dict] = None, save: bool = True,
+            starting_long: Optional[dict] = None) -> dict:
         """
         Run backtest on a DataFrame that already has a 'signal' column.
         signal: 1 = buy, -1 = sell, 0 = hold
@@ -86,6 +115,22 @@ class Backtester:
         close of bar t is read after the bar finishes and filled at bar t+1's
         open (no look-ahead bias). Falls back to close when an ``open`` column
         is not present.
+
+        starting_long: optional dict with keys ``entry_price`` (float, USD)
+            and ``entry_date`` (index value, defaults to df.index[0]).
+            When provided, the run begins already-long: the full
+            ``initial_capital`` is treated as committed at ``entry_price``
+            (minus one commission for the implicit buy). Use for carrying
+            walk-forward position state across a fold boundary so SELL
+            signals in the first train bars actually close the warmup
+            position instead of being dropped as "sell while flat".
+            Note: ``equity[0]`` for a seeded run reflects the starting
+            position's mark-to-market (``shares * close[0]``), not
+            ``initial_capital``. ``_calculate_metrics`` anchors
+            ``total_return_pct`` and ``max_drawdown_pct`` at
+            ``self.initial_capital`` so the baseline is consistent with
+            unseeded runs, while ``sharpe`` and ``volatility`` are
+            computed from ``pct_change()`` and are unaffected.
 
         Returns dict with all performance metrics.
         """
@@ -102,6 +147,18 @@ class Backtester:
         trades = []
         current_trade = None
         equity_curve = []
+
+        if starting_long:
+            effective_entry = starting_long["entry_price"]
+            entry_commission = self.initial_capital * self.commission_pct
+            available = self.initial_capital - entry_commission
+            position = available / effective_entry
+            cash = 0.0
+            current_trade = Trade(
+                starting_long.get("entry_date", df.index[0]),
+                effective_entry, "long",
+            )
+            current_trade.shares = position
 
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
@@ -175,8 +232,11 @@ class Backtester:
         """Calculate comprehensive performance metrics."""
         equity = equity_df["equity"]
 
-        # Returns
-        total_return = (equity.iloc[-1] - equity.iloc[0]) / equity.iloc[0]
+        # Anchor return + drawdown at initial_capital so seeded runs (where
+        # equity[0] reflects the starting_long mark-to-market, not the true
+        # pre-trade balance) don't distort the baseline. For non-seeded runs
+        # this is a no-op because equity[0] == initial_capital.
+        total_return = (equity.iloc[-1] - self.initial_capital) / self.initial_capital
 
         # Annualized return
         days = (df.index[-1] - df.index[0]).days
@@ -199,8 +259,11 @@ class Backtester:
         else:
             sortino = 0.0
 
-        # Max Drawdown
-        cummax = equity.cummax()
+        # Max Drawdown — floor the running peak at initial_capital so the
+        # baseline is always the true starting balance, not a seeded
+        # mark-to-market that may already be below initial_capital.
+        cummax_raw = equity.cummax()
+        cummax = cummax_raw.where(cummax_raw >= self.initial_capital, self.initial_capital)
         drawdown = (equity - cummax) / cummax
         max_drawdown = drawdown.min()
 
