@@ -842,7 +842,7 @@ func TestAddKillSwitchEvent_MaxCap(t *testing.T) {
 	prs := &PortfolioRiskState{}
 
 	for i := 0; i < 60; i++ {
-		addKillSwitchEvent(prs, "warning", float64(i), 1000, 2000, "test")
+		addKillSwitchEvent(prs, "warning", "equity", float64(i), 1000, 2000, "test")
 	}
 
 	if len(prs.Events) != maxKillSwitchEvents {
@@ -1488,9 +1488,31 @@ func TestCheckPortfolioRisk_AllPerps_MarginDrawdownFires(t *testing.T) {
 	if !strings.Contains(reason, "margin") {
 		t.Errorf("expected reason to reference perps margin drawdown; got %q", reason)
 	}
-	// CurrentDrawdownPct should reflect the worse of the two signals (50%).
-	if prs.CurrentDrawdownPct < 49.9 || prs.CurrentDrawdownPct > 50.1 {
-		t.Errorf("expected CurrentDrawdownPct≈50%%; got %.2f", prs.CurrentDrawdownPct)
+	// Equity drawdown was only 5% — field stays on the equity signal.
+	if prs.CurrentDrawdownPct < 4.9 || prs.CurrentDrawdownPct > 5.1 {
+		t.Errorf("expected CurrentDrawdownPct (equity)≈5%%; got %.2f", prs.CurrentDrawdownPct)
+	}
+	// Margin drawdown is 50% — recorded on the dedicated field so persistence
+	// stays arithmetically consistent (peak_value / current_drawdown_pct).
+	if prs.CurrentMarginDrawdownPct < 49.9 || prs.CurrentMarginDrawdownPct > 50.1 {
+		t.Errorf("expected CurrentMarginDrawdownPct≈50%%; got %.2f", prs.CurrentMarginDrawdownPct)
+	}
+	// Event must be recorded with source="margin" so auditors can tell which
+	// signal drove the fire without re-parsing the reason string.
+	if len(prs.Events) != 1 {
+		t.Fatalf("expected exactly one event; got %d", len(prs.Events))
+	}
+	evt := prs.Events[0]
+	if evt.Type != "triggered" {
+		t.Errorf("expected event Type=triggered; got %q", evt.Type)
+	}
+	if evt.Source != "margin" {
+		t.Errorf("expected event Source=margin; got %q", evt.Source)
+	}
+	// Event's DrawdownPct records the signal value (margin=50%), not a
+	// mixed "worse of" number.
+	if evt.DrawdownPct < 49.9 || evt.DrawdownPct > 50.1 {
+		t.Errorf("expected event DrawdownPct≈50%% (margin signal); got %.2f", evt.DrawdownPct)
 	}
 }
 
@@ -1519,6 +1541,9 @@ func TestCheckPortfolioRisk_MixedAccount_SpotEquityStillHonored(t *testing.T) {
 	if strings.Contains(reason, "margin") {
 		t.Errorf("expected reason to reference equity drawdown, not margin; got %q", reason)
 	}
+	if len(prs.Events) != 1 || prs.Events[0].Source != "equity" {
+		t.Errorf("expected one triggered event with Source=equity; got %+v", prs.Events)
+	}
 }
 
 // TestCheckPortfolioRisk_MixedAccount_MarginFiresFirst verifies that when both
@@ -1540,9 +1565,15 @@ func TestCheckPortfolioRisk_MixedAccount_MarginFiresFirst(t *testing.T) {
 	if !strings.Contains(reason, "margin") {
 		t.Errorf("expected reason to reference margin (worse signal); got %q", reason)
 	}
-	// CurrentDrawdownPct reflects the worse signal (60%).
-	if prs.CurrentDrawdownPct < 59.9 || prs.CurrentDrawdownPct > 60.1 {
-		t.Errorf("expected CurrentDrawdownPct≈60%%; got %.2f", prs.CurrentDrawdownPct)
+	// Equity and margin are persisted separately: equity=30%, margin=60%.
+	if prs.CurrentDrawdownPct < 29.9 || prs.CurrentDrawdownPct > 30.1 {
+		t.Errorf("expected CurrentDrawdownPct (equity)≈30%%; got %.2f", prs.CurrentDrawdownPct)
+	}
+	if prs.CurrentMarginDrawdownPct < 59.9 || prs.CurrentMarginDrawdownPct > 60.1 {
+		t.Errorf("expected CurrentMarginDrawdownPct≈60%%; got %.2f", prs.CurrentMarginDrawdownPct)
+	}
+	if len(prs.Events) != 1 || prs.Events[0].Source != "margin" {
+		t.Errorf("expected one triggered event with Source=margin; got %+v", prs.Events)
 	}
 }
 
@@ -1590,11 +1621,11 @@ func TestCheckPortfolioRisk_MarginWarning(t *testing.T) {
 	}
 }
 
-// TestAggregatePerpsMarginDrawdown verifies the helper sums across multiple
+// TestAggregatePerpsMarginInputs verifies the helper sums across multiple
 // perps strategies and ignores non-perps (spot/options/futures). This is the
 // inputs side of the #296 portfolio kill switch — a regression here would
 // silently under-count deployed margin and hide leveraged losses.
-func TestAggregatePerpsMarginDrawdown(t *testing.T) {
+func TestAggregatePerpsMarginInputs(t *testing.T) {
 	strategies := map[string]*StrategyState{
 		"hl-btc": {
 			Type: "perps",
@@ -1636,7 +1667,7 @@ func TestAggregatePerpsMarginDrawdown(t *testing.T) {
 		"ES":       5100,
 	}
 
-	loss, margin := AggregatePerpsMarginDrawdown(strategies, prices)
+	loss, margin := AggregatePerpsMarginInputs(strategies, prices)
 
 	// Only the losing BTC short contributes to loss: 2000.
 	// Margin includes both perps positions: 4200 + 6200 = 10400.
@@ -1650,10 +1681,10 @@ func TestAggregatePerpsMarginDrawdown(t *testing.T) {
 	}
 }
 
-// TestAggregatePerpsMarginDrawdown_NoPerpsReturnsZero verifies the helper
+// TestAggregatePerpsMarginInputs_NoPerpsReturnsZero verifies the helper
 // returns (0, 0) when no perps strategies exist. The caller treats zero
 // margin as the signal to fall back to pure equity drawdown.
-func TestAggregatePerpsMarginDrawdown_NoPerpsReturnsZero(t *testing.T) {
+func TestAggregatePerpsMarginInputs_NoPerpsReturnsZero(t *testing.T) {
 	strategies := map[string]*StrategyState{
 		"spot-btc": {
 			Type: "spot",
@@ -1662,8 +1693,74 @@ func TestAggregatePerpsMarginDrawdown_NoPerpsReturnsZero(t *testing.T) {
 			},
 		},
 	}
-	loss, margin := AggregatePerpsMarginDrawdown(strategies, map[string]float64{"BTC/USDT": 50000})
+	loss, margin := AggregatePerpsMarginInputs(strategies, map[string]float64{"BTC/USDT": 50000})
 	if loss != 0 || margin != 0 {
 		t.Errorf("expected (0, 0) for no perps; got (%.2f, %.2f)", loss, margin)
+	}
+}
+
+// TestCheckPortfolioRisk_PeakZero_MarginCanStillFire guards against the
+// subtle gating change introduced in #296: a cold-start account (no prior
+// valuation, PeakValue==0) that opens a leveraged perps position and
+// immediately blows up its margin must still kill-switch. Pre-#296 the
+// entire kill-switch branch sat inside `if prs.PeakValue > 0`, so a fresh
+// account firing on bar 1 was impossible; the margin signal has to work
+// independent of the equity high-water mark.
+func TestCheckPortfolioRisk_PeakZero_MarginCanStillFire(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 0} // cold start: no prior valuation
+
+	// Cold account opens a 10x perps position, immediately down 50% on
+	// margin. totalValue is zero (we have no valuation yet) so equityDD is
+	// zero; margin signal is 50%, well above the 25% limit.
+	allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, 0, 0, 500, 1000)
+	if allowed {
+		t.Errorf("expected cold-start margin drawdown to fire kill switch; got allowed=true, reason=%s", reason)
+	}
+	if !prs.KillSwitchActive {
+		t.Error("expected KillSwitchActive=true on cold-start margin blowup")
+	}
+	if !strings.Contains(reason, "margin") {
+		t.Errorf("expected margin-driven reason; got %q", reason)
+	}
+	if len(prs.Events) != 1 || prs.Events[0].Source != "margin" {
+		t.Errorf("expected one triggered event with Source=margin; got %+v", prs.Events)
+	}
+}
+
+// TestCheckPortfolioRisk_BothSignalsBreachWarn_ReasonIncludesBoth verifies
+// that when both equity and margin cross the warning threshold in the same
+// cycle, the reason string surfaces both — so a correlated move is visible
+// to the operator at a glance rather than hidden behind the larger signal.
+func TestCheckPortfolioRisk_BothSignalsBreachWarn_ReasonIncludesBoth(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000}
+
+	// Equity drawdown 22%, margin drawdown 23% — both above the 20% warn
+	// threshold, both below the 25% kill switch.
+	_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 7800, 0, 230, 1000)
+	if !warning {
+		t.Fatalf("expected warning=true; reason=%q", reason)
+	}
+	if !strings.Contains(reason, "equity=") || !strings.Contains(reason, "margin=") {
+		t.Errorf("expected reason to mention both equity= and margin=; got %q", reason)
+	}
+}
+
+// TestCheckPortfolioRisk_MarginWarning_FieldsPopulated makes sure the
+// dedicated CurrentMarginDrawdownPct field is kept current even when the
+// warning does not fire (so /status surfaces the live margin signal). This
+// mirrors CurrentDrawdownPct's always-updated contract.
+func TestCheckPortfolioRisk_MarginWarning_FieldsPopulated(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000}
+
+	// Equity flat. Margin drawdown 10% — below warn. Field still updates.
+	_, _, warning, _ := CheckPortfolioRisk(prs, cfg, 10000, 0, 100, 1000)
+	if warning {
+		t.Error("expected warning=false at 10%% margin drawdown")
+	}
+	if prs.CurrentMarginDrawdownPct < 9.9 || prs.CurrentMarginDrawdownPct > 10.1 {
+		t.Errorf("expected CurrentMarginDrawdownPct≈10%%; got %.2f", prs.CurrentMarginDrawdownPct)
 	}
 }
