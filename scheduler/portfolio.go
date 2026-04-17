@@ -76,9 +76,20 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // leveraged budget with slippage applied.
 //
 // fillOID/fillFee carry exchange metadata for live fills (empty/zero for
-// paper); they are stamped onto every Trade constructed in this call so
-// RecordTrade persists the complete row on the first INSERT — see #289 for
-// why post-hoc mutation of TradeHistory entries no longer reaches SQLite.
+// paper). They are stamped ONLY on the trade that represents the new
+// position — the opening trade on signal=1, the closing trade on
+// signal=-1. The rationale: one live fill = one exchange fee; if a buy
+// signal encounters an existing short, ExecutePerpsSignal synthesizes a
+// close-short + open-long pair for in-memory accounting, but the real
+// exchange action was the single fill that opened the long. Stamping the
+// same fee on both legs would double-count it in analytics. The close-leg
+// row therefore carries empty exchange metadata — accurate, since no
+// distinct exchange order closed it. See #289.
+//
+// In current live mode the flip branch is unreachable: signal=-1 does not
+// open shorts, and runHyperliquidExecuteOrder sizes buys as a fresh open,
+// not close+open. The policy above exists so the invariant survives any
+// future adapter that does model flips as two fills or adds short-open.
 func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
@@ -112,18 +123,20 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			fee := CalculatePlatformSpotFee(feePlatform, pos.Quantity*execPrice)
 			pnl -= fee
 			s.Cash += pnl
+			// Synthetic close — no exchange metadata stamped; the real fill
+			// (if any) is attributed to the open-long trade below. Prevents
+			// fee double-count when a flip produces two in-memory trades
+			// from a single exchange fill.
 			trade := Trade{
-				Timestamp:       time.Now().UTC(),
-				StrategyID:      s.ID,
-				Symbol:          symbol,
-				Side:            "buy",
-				Quantity:        pos.Quantity,
-				Price:           execPrice,
-				Value:           pos.Quantity * execPrice,
-				TradeType:       "perps",
-				Details:         fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
-				ExchangeOrderID: fillOID,
-				ExchangeFee:     fillFee,
+				Timestamp:  time.Now().UTC(),
+				StrategyID: s.ID,
+				Symbol:     symbol,
+				Side:       "buy",
+				Quantity:   pos.Quantity,
+				Price:      execPrice,
+				Value:      pos.Quantity * execPrice,
+				TradeType:  "perps",
+				Details:    fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee),
 			}
 			RecordTrade(s, trade)
 			RecordTradeResult(&s.RiskState, pnl)

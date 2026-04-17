@@ -242,6 +242,86 @@ func TestExecutePerpsSignal_PersistsExchangeMetadata(t *testing.T) {
 	}
 }
 
+// TestExecutePerpsSignal_FlipDoesNotDoubleCountFee pins the policy that when
+// a buy signal encounters an existing short — producing a close-short +
+// open-long pair in memory — only the opening trade carries the exchange
+// fee. A single live fill represents one exchange fee; stamping it on both
+// synthetic legs would 2× it in analytics. Summed ExchangeFee across the
+// two persisted rows must equal the one real fee, and the OID must appear
+// on exactly one row (the opener — the trade that reflects the real fill).
+func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
+	db := openTestDB(t)
+	prev := tradeRecorder
+	tradeRecorder = db.InsertTrade
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"hl-flip": {
+				ID:             "hl-flip",
+				Platform:       "hyperliquid",
+				Type:           "perps",
+				Cash:           1000,
+				InitialCapital: 1000,
+				Positions: map[string]*Position{
+					// Pre-existing short — the only way to trigger the flip
+					// branch in current live mode (state migration, paper→live
+					// handoff, or a future adapter that opens shorts).
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
+				},
+				OptionPositions: map[string]*OptionPosition{},
+				TradeHistory:    []Trade{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("seed SaveState: %v", err)
+	}
+
+	logger := newTestLogger(t)
+	s := state.Strategies["hl-flip"]
+
+	// Live buy @ $2000 qty=0.3 → closes the full 0.5 short + opens new 0.3
+	// long = 2 in-memory trades, 1 real exchange fill worth $0.42.
+	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.3, "99999", 0.42, logger)
+	if err != nil {
+		t.Fatalf("ExecutePerpsSignal: %v", err)
+	}
+	if trades != 2 {
+		t.Fatalf("trades = %d, want 2 (close-short + open-long)", trades)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	ss := loaded.Strategies["hl-flip"]
+	if ss == nil || len(ss.TradeHistory) != 2 {
+		t.Fatalf("loaded trades = %d, want 2", len(ss.TradeHistory))
+	}
+
+	var totalFee float64
+	oidHits := 0
+	var openerFee float64
+	for _, tr := range ss.TradeHistory {
+		totalFee += tr.ExchangeFee
+		if tr.ExchangeOrderID == "99999" {
+			oidHits++
+			openerFee = tr.ExchangeFee
+		}
+	}
+	if totalFee != 0.42 {
+		t.Errorf("sum(ExchangeFee) = %v, want 0.42 (fee double-counted across flip legs)", totalFee)
+	}
+	if oidHits != 1 {
+		t.Errorf("rows with OID=99999 = %d, want 1 (only the opener should carry the real fill's OID)", oidHits)
+	}
+	if openerFee != 0.42 {
+		t.Errorf("opener ExchangeFee = %v, want 0.42", openerFee)
+	}
+}
+
 // TestExecuteSpotSignal_PersistsImmediately verifies that the production
 // execution path (ExecuteSpotSignal) writes trades through the tradeRecorder
 // hook, not just the end-of-cycle SaveState batch.
