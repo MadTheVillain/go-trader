@@ -213,6 +213,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "No notification backends configured\n")
 			os.Exit(1)
 		}
+		if len(state.Strategies) == 0 {
+			fmt.Fprintln(os.Stderr, "No strategies configured; nothing to post")
+			os.Exit(0)
+		}
 		prices := fetchPricesForSummary(cfg)
 		if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
 			fmt.Fprintf(os.Stderr, "Leaderboard post failed: %v\n", err)
