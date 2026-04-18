@@ -147,7 +147,7 @@ func (m *MultiNotifier) SendToChannel(platform, stratType, content string) {
 }
 
 // PostLeaderboardBroadcast routes an all-time leaderboard message
-// (top10/bottom10) on a per-backend basis. For each backend: if a dedicated
+// (top/bottom) on a per-backend basis. For each backend: if a dedicated
 // leaderboardChannel is configured, the message is sent there once; otherwise
 // it broadcasts to all unique channels on that backend.
 func (m *MultiNotifier) PostLeaderboardBroadcast(content string) {
