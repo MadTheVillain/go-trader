@@ -925,10 +925,13 @@ func main() {
 			}
 		}
 
-		// Periodic configurable leaderboard summaries (#308). Runs under Lock
-		// because it updates state.LastLeaderboardSummaries; notifier SendMessage
-		// is a fast fire-and-forget send to the Discord gateway.
-		runDueLeaderboardSummaries(cfg, state, notifier, prices)
+		// Periodic configurable leaderboard summaries (#308). Compute + update
+		// state.LastLeaderboardSummaries under Lock; post outside so Discord
+		// HTTPS latency can't stall the scheduler cycle.
+		var duePending []pendingLeaderboardSummary
+		if notifier.HasBackends() {
+			duePending = collectDueLeaderboardSummaries(cfg, state, prices)
+		}
 
 		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 			saveFailures++
@@ -959,6 +962,16 @@ func main() {
 		if top10Msg != "" {
 			notifier.SendToChannel("hyperliquid-leaderboard", "hyperliquid", top10Msg)
 			fmt.Println("[top10] Posted hyperliquid top-10 summary")
+		}
+
+		// Post any configurable leaderboard summaries (#308) outside the lock.
+		for _, p := range duePending {
+			if err := notifier.SendMessage(p.channel, p.msg); err != nil {
+				fmt.Printf("[WARN] Leaderboard summary send to channel %s failed: %v\n", p.channel, err)
+				continue
+			}
+			fmt.Printf("[leaderboard-summary] Posted platform=%s ticker=%s top_n=%d channel=%s\n",
+				p.platform, p.ticker, p.topN, p.channel)
 		}
 
 		// Post leaderboard outside the lock to avoid holding mu during I/O.
@@ -2108,17 +2121,30 @@ func runLeaderboardSummaryAndExit(lc LeaderboardSummaryConfig, cfg *Config, stat
 	os.Exit(0)
 }
 
-// runDueLeaderboardSummaries auto-posts any LeaderboardSummaries entries whose
-// Frequency has elapsed since the last post. Updates state.LastLeaderboardSummaries.
-// Caller must hold the write lock on state. (#308)
-func runDueLeaderboardSummaries(cfg *Config, state *AppState, notifier *MultiNotifier, prices map[string]float64) {
-	if len(cfg.LeaderboardSummaries) == 0 || !notifier.HasBackends() {
-		return
+// pendingLeaderboardSummary carries a computed summary from under-lock
+// computation to post-unlock I/O. (#308)
+type pendingLeaderboardSummary struct {
+	channel  string
+	msg      string
+	platform string
+	ticker   string
+	topN     int
+}
+
+// collectDueLeaderboardSummaries builds summaries for LeaderboardSummaries
+// entries whose Frequency has elapsed. Marks state.LastLeaderboardSummaries
+// optimistically so duplicate posts are avoided if the caller's Discord send
+// fails; same semantics as the previous in-lock implementation. Caller must
+// hold the write lock on state. (#308)
+func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[string]float64) []pendingLeaderboardSummary {
+	if len(cfg.LeaderboardSummaries) == 0 {
+		return nil
 	}
 	if state.LastLeaderboardSummaries == nil {
 		state.LastLeaderboardSummaries = make(map[string]time.Time)
 	}
 	now := time.Now().UTC()
+	var pending []pendingLeaderboardSummary
 	for _, lc := range cfg.LeaderboardSummaries {
 		freq := lc.ParsedFrequency()
 		if freq <= 0 {
@@ -2133,12 +2159,14 @@ func runDueLeaderboardSummaries(cfg *Config, state *AppState, notifier *MultiNot
 		if msg == "" {
 			continue
 		}
-		if err := notifier.SendMessage(lc.Channel, msg); err != nil {
-			fmt.Printf("[WARN] Leaderboard summary send to channel %s failed: %v\n", lc.Channel, err)
-			continue
-		}
 		state.LastLeaderboardSummaries[key] = now
-		fmt.Printf("[leaderboard-summary] Posted platform=%s ticker=%s top_n=%d channel=%s\n",
-			lc.Platform, lc.Ticker, lc.TopN, lc.Channel)
+		pending = append(pending, pendingLeaderboardSummary{
+			channel:  lc.Channel,
+			msg:      msg,
+			platform: lc.Platform,
+			ticker:   lc.Ticker,
+			topN:     lc.TopN,
+		})
 	}
+	return pending
 }
