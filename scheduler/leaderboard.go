@@ -1,10 +1,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -12,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// LeaderboardEntry holds pre-computed PnL data for one strategy.
+// LeaderboardEntry holds computed PnL data for one strategy.
 type LeaderboardEntry struct {
 	ID      string  `json:"id"`
 	Type    string  `json:"type"`
@@ -23,22 +20,6 @@ type LeaderboardEntry struct {
 	Trades  int     `json:"trades"`
 }
 
-// LeaderboardData is the pre-computed leaderboard written to disk each cycle.
-type LeaderboardData struct {
-	Timestamp time.Time `json:"timestamp"`
-	// Messages keys: "top10" and "bottom10". The names are retained for
-	// backwards compatibility with the on-disk leaderboard.json schema; the
-	// entry count is actually controlled by Discord.LeaderboardTopN.
-	Messages map[string]string `json:"messages"`
-}
-
-// leaderboardPath returns the path for the pre-computed leaderboard file,
-// stored next to the SQLite state DB.
-func leaderboardPath(cfg *Config) string {
-	dir := filepath.Dir(cfg.DBFile)
-	return filepath.Join(dir, "leaderboard.json")
-}
-
 // leaderboardTopN returns the configured top-N count, defaulting to 5 when unset.
 func leaderboardTopN(cfg *Config) int {
 	if cfg.Discord.LeaderboardTopN > 0 {
@@ -47,11 +28,13 @@ func leaderboardTopN(cfg *Config) int {
 	return 5
 }
 
-// PrecomputeLeaderboard builds leaderboard messages from current state and writes
-// them to leaderboard.json. Called after each cycle's state save so the data is
-// always fresh. The cron job just reads and posts this file.
-func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float64) error {
-	// Build entries for all strategies.
+// BuildLeaderboardMessages computes the aggregate top-N / bottom-N leaderboard
+// messages from the current state. Returned map keys are "top10" and "bottom10"
+// (names retained for continuity with the Discord channel routing keys — the
+// actual entry count is controlled by Discord.LeaderboardTopN). Returns nil if
+// no strategies have state. Issue #313 moved this to an on-demand compute
+// (previously written to leaderboard.json every cycle).
+func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64) map[string]string {
 	var allEntries []LeaderboardEntry
 
 	for _, sc := range cfg.Strategies {
@@ -78,38 +61,15 @@ func PrecomputeLeaderboard(cfg *Config, state *AppState, prices map[string]float
 		})
 	}
 
-	messages := make(map[string]string)
+	if len(allEntries) == 0 {
+		return nil
+	}
+
 	topN := leaderboardTopN(cfg)
-
-	// All-time top-N and bottom-N across all strategies. Per-product sections
-	// (spot/perps/options/futures) are delivered via BuildLeaderboardSummary
-	// to individual platform channels; the dedicated leaderboard channel shows
-	// only the aggregate view. Issue #310.
-	if len(allEntries) > 0 {
-		messages["top10"] = formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN)
-		messages["bottom10"] = formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN)
+	return map[string]string{
+		"top10":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN),
+		"bottom10": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN),
 	}
-
-	data := LeaderboardData{
-		Timestamp: time.Now().UTC(),
-		Messages:  messages,
-	}
-
-	path := leaderboardPath(cfg)
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create leaderboard dir: %w", err)
-	}
-
-	raw, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal leaderboard: %w", err)
-	}
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, raw, 0600); err != nil {
-		return fmt.Errorf("write leaderboard: %w", err)
-	}
-	return os.Rename(tmpPath, path)
 }
 
 // formatLeaderboardMessage formats a leaderboard message for a sorted slice of entries.
@@ -225,26 +185,21 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 	return formatLeaderboardMessage(icon, title, top, true, n)
 }
 
-// LoadLeaderboard reads the pre-computed leaderboard from disk.
-func LoadLeaderboard(cfg *Config) (*LeaderboardData, error) {
-	path := leaderboardPath(cfg)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read leaderboard: %w", err)
-	}
-	var lb LeaderboardData
-	if err := json.Unmarshal(data, &lb); err != nil {
-		return nil, fmt.Errorf("parse leaderboard: %w", err)
-	}
-	return &lb, nil
+// PostLeaderboard computes the leaderboard on-demand and posts all messages to
+// the configured notification backends. Issue #313 moved this from reading a
+// pre-computed leaderboard.json (which was rewritten every cycle) to computing
+// fresh data at post time — the data is only used by the daily cron post and
+// the --leaderboard flag, so there is no benefit to pre-computation.
+func PostLeaderboard(cfg *Config, state *AppState, prices map[string]float64, notifier *MultiNotifier) error {
+	return postLeaderboardMessages(BuildLeaderboardMessages(cfg, state, prices), notifier)
 }
 
-// PostLeaderboard reads the pre-computed leaderboard and posts all messages
-// to the configured notification backends. This is the fast path for the cron job.
-func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
-	lb, err := LoadLeaderboard(cfg)
-	if err != nil {
-		return err
+// postLeaderboardMessages posts pre-built leaderboard messages. Separated from
+// PostLeaderboard so callers that need to build under a state lock and post
+// outside it (e.g. the scheduler cycle) can split the two phases.
+func postLeaderboardMessages(messages map[string]string, notifier *MultiNotifier) error {
+	if len(messages) == 0 {
+		return fmt.Errorf("no strategies to leaderboard")
 	}
 
 	// Post aggregate top/bottom messages with 1s delay between them.
@@ -254,7 +209,7 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 	order := []string{"top10", "bottom10"}
 	first := true
 	for _, key := range order {
-		msg, ok := lb.Messages[key]
+		msg, ok := messages[key]
 		if !ok || msg == "" {
 			continue
 		}
@@ -267,7 +222,7 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 		fmt.Println(msg)
 	}
 
-	fmt.Printf("Leaderboard posted (pre-computed at %s)\n", lb.Timestamp.Format(time.RFC3339))
+	fmt.Printf("Leaderboard posted (computed at %s)\n", time.Now().UTC().Format(time.RFC3339))
 	return nil
 }
 
