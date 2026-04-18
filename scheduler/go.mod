@@ -1,6 +1,6 @@
 module trading-scheduler
 
-go 1.26.0
+go 1.26.2
 
 require github.com/bwmarrin/discordgo v0.29.0
 
