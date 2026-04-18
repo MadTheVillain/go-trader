@@ -442,7 +442,10 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			execPrice = price
 			qty = fillQty - flipCloseQty
 			if qty <= 0 {
-				logger.Info("Flip fill qty (%.6f) did not cover new long after closing short (%.6f); leaving flat", fillQty, flipCloseQty)
+				// Partial-fill on a flip order — the scheduler intended to flip
+				// but the exchange only closed. Warn so regressions are visible
+				// in the strategy log (matching risk.go's Warn-level signals).
+				logger.Warn("Flip fill qty (%.6f) did not cover new long after closing short (%.6f); leaving flat", fillQty, flipCloseQty)
 				return tradesExecuted, nil
 			}
 		} else {
@@ -557,7 +560,7 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 			execPrice = price
 			qty = fillQty - flipCloseQty
 			if qty <= 0 {
-				logger.Info("Flip fill qty (%.6f) did not cover new short after closing long (%.6f); leaving flat", fillQty, flipCloseQty)
+				logger.Warn("Flip fill qty (%.6f) did not cover new short after closing long (%.6f); leaving flat", fillQty, flipCloseQty)
 				return tradesExecuted, nil
 			}
 		} else {
