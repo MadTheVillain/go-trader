@@ -1,16 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestPrecomputeLeaderboard(t *testing.T) {
+func TestBuildLeaderboardMessages(t *testing.T) {
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "state.db")
 
@@ -28,21 +26,20 @@ func TestPrecomputeLeaderboard(t *testing.T) {
 	state := NewAppState()
 	for _, sc := range cfg.Strategies {
 		ss := NewStrategyState(sc)
-		// Give each strategy different PnL by adjusting cash.
 		switch sc.ID {
 		case "sma-btc":
-			ss.Cash = 1100 // +10%
+			ss.Cash = 1100
 			ss.TradeHistory = []Trade{{StrategyID: "sma-btc"}, {StrategyID: "sma-btc"}, {StrategyID: "sma-btc"}}
 		case "rsi-eth":
-			ss.Cash = 450 // -10%
+			ss.Cash = 450
 			ss.TradeHistory = []Trade{{StrategyID: "rsi-eth"}}
 		case "hl-sma-btc":
-			ss.Cash = 2200 // +10%
+			ss.Cash = 2200
 			ss.TradeHistory = []Trade{{StrategyID: "hl-sma-btc"}, {StrategyID: "hl-sma-btc"}}
 		case "deribit-ccall-btc":
-			ss.Cash = 1050 // +5%
+			ss.Cash = 1050
 		case "ts-breakout-es":
-			ss.Cash = 4800 // -4%
+			ss.Cash = 4800
 		}
 		state.Strategies[sc.ID] = ss
 	}
@@ -52,44 +49,26 @@ func TestPrecomputeLeaderboard(t *testing.T) {
 		"ETH/USDT": 3000,
 	}
 
-	err := PrecomputeLeaderboard(cfg, state, prices)
-	if err != nil {
-		t.Fatalf("PrecomputeLeaderboard failed: %v", err)
+	messages := BuildLeaderboardMessages(cfg, state, prices)
+	if messages == nil {
+		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
 
-	// Verify file was written.
-	path := leaderboardPath(cfg)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("Failed to read leaderboard file: %v", err)
-	}
-
-	var lb LeaderboardData
-	if err := json.Unmarshal(data, &lb); err != nil {
-		t.Fatalf("Failed to parse leaderboard: %v", err)
-	}
-
-	// Only aggregate top10/bottom10 messages are produced now; per-product
-	// sections were removed in issue #310.
-	if _, ok := lb.Messages["top10"]; !ok {
+	// Only aggregate top10/bottom10 messages are produced; per-product sections
+	// were removed in issue #310.
+	if _, ok := messages["top10"]; !ok {
 		t.Error("Missing top10 leaderboard message")
 	}
-	if _, ok := lb.Messages["bottom10"]; !ok {
+	if _, ok := messages["bottom10"]; !ok {
 		t.Error("Missing bottom10 leaderboard message")
 	}
 	for _, key := range []string{"spot", "perps", "options", "futures"} {
-		if _, ok := lb.Messages[key]; ok {
+		if _, ok := messages[key]; ok {
 			t.Errorf("Per-product section %q should no longer be emitted", key)
 		}
 	}
 
-	// Verify timestamp is recent.
-	if lb.Timestamp.IsZero() {
-		t.Error("Leaderboard timestamp is zero")
-	}
-
-	// Top10 should contain strategy IDs, PnL data, and the Trades column.
-	top10Msg := lb.Messages["top10"]
+	top10Msg := messages["top10"]
 	if top10Msg == "" {
 		t.Fatal("top10 message is empty")
 	}
@@ -110,35 +89,15 @@ func TestPrecomputeLeaderboard(t *testing.T) {
 	}
 }
 
-func TestLoadLeaderboard(t *testing.T) {
-	dir := t.TempDir()
-	stateFile := filepath.Join(dir, "state.db")
-	cfg := &Config{DBFile: stateFile}
+// TestBuildLeaderboardMessages_Empty verifies BuildLeaderboardMessages returns
+// nil when no strategies have state. PostLeaderboard relies on this to surface
+// the "no strategies" error instead of posting empty messages.
+func TestBuildLeaderboardMessages_Empty(t *testing.T) {
+	cfg := &Config{DBFile: filepath.Join(t.TempDir(), "state.db")}
+	state := NewAppState()
 
-	// No file yet — should error.
-	_, err := LoadLeaderboard(cfg)
-	if err == nil {
-		t.Error("Expected error when leaderboard file doesn't exist")
-	}
-
-	// Write a valid file.
-	lb := LeaderboardData{
-		Messages: map[string]string{
-			"spot": "test message",
-		},
-	}
-	data, _ := json.Marshal(lb)
-	path := leaderboardPath(cfg)
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	loaded, err := LoadLeaderboard(cfg)
-	if err != nil {
-		t.Fatalf("LoadLeaderboard failed: %v", err)
-	}
-	if loaded.Messages["spot"] != "test message" {
-		t.Errorf("Expected 'test message', got %q", loaded.Messages["spot"])
+	if messages := BuildLeaderboardMessages(cfg, state, nil); messages != nil {
+		t.Errorf("Expected nil messages for empty state, got %v", messages)
 	}
 }
 
@@ -202,12 +161,8 @@ func TestLeaderboardTopNNegative(t *testing.T) {
 	}
 }
 
-// TestPrecomputeLeaderboardTopN verifies that LeaderboardTopN limits the entries shown.
-func TestPrecomputeLeaderboardTopN(t *testing.T) {
-	dir := t.TempDir()
-	stateFile := fmt.Sprintf("%s/state.db", dir)
-
-	// Create 8 spot strategies.
+// TestBuildLeaderboardMessages_TopN verifies that LeaderboardTopN limits the entries shown.
+func TestBuildLeaderboardMessages_TopN(t *testing.T) {
 	var strats []StrategyConfig
 	for i := 0; i < 8; i++ {
 		strats = append(strats, StrategyConfig{
@@ -220,7 +175,6 @@ func TestPrecomputeLeaderboardTopN(t *testing.T) {
 	}
 
 	cfg := &Config{
-		DBFile:     stateFile,
 		Strategies: strats,
 		Discord:    DiscordConfig{LeaderboardTopN: 3},
 	}
@@ -228,22 +182,16 @@ func TestPrecomputeLeaderboardTopN(t *testing.T) {
 	state := NewAppState()
 	for i, sc := range cfg.Strategies {
 		ss := NewStrategyState(sc)
-		ss.Cash = 1000 + float64(i)*10 // different PnL for each
+		ss.Cash = 1000 + float64(i)*10
 		state.Strategies[sc.ID] = ss
 	}
 
-	prices := map[string]float64{"BTC/USDT": 50000}
-	if err := PrecomputeLeaderboard(cfg, state, prices); err != nil {
-		t.Fatalf("PrecomputeLeaderboard failed: %v", err)
+	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000})
+	if messages == nil {
+		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
 
-	lb, err := LoadLeaderboard(cfg)
-	if err != nil {
-		t.Fatalf("LoadLeaderboard failed: %v", err)
-	}
-
-	// All-time top/bottom messages must respect LeaderboardTopN.
-	top10Msg := lb.Messages["top10"]
+	top10Msg := messages["top10"]
 	if top10Msg == "" {
 		t.Fatal("Expected non-empty top10 all-time message")
 	}
@@ -254,52 +202,48 @@ func TestPrecomputeLeaderboardTopN(t *testing.T) {
 	if !containsStr(top10Msg, "sma-s05") {
 		t.Error("top10 all-time should contain sma-s05 when top_n=3")
 	}
-	// sma-s04 is 4th — should NOT appear.
 	if containsStr(top10Msg, "sma-s04") {
 		t.Error("top10 all-time should not contain sma-s04 when top_n=3")
 	}
 
-	bottom10Msg := lb.Messages["bottom10"]
+	bottom10Msg := messages["bottom10"]
 	if bottom10Msg == "" {
 		t.Fatal("Expected non-empty bottom10 all-time message")
 	}
-	// Bottom 3 by PnL%: sma-s00, sma-s01, sma-s02.
 	if !containsStr(bottom10Msg, "sma-s00") {
 		t.Error("bottom10 all-time should contain sma-s00 when top_n=3")
 	}
 	if !containsStr(bottom10Msg, "sma-s02") {
 		t.Error("bottom10 all-time should contain sma-s02 when top_n=3")
 	}
-	// sma-s03 is 4th-worst — should NOT appear.
 	if containsStr(bottom10Msg, "sma-s03") {
 		t.Error("bottom10 all-time should not contain sma-s03 when top_n=3")
 	}
 }
 
-// TestPostLeaderboard_DedicatedChannel verifies that when DiscordConfig.LeaderboardChannel
-// is set (wired into notifierBackend.leaderboardChannel), PostLeaderboard routes
-// every category and all-time message to the dedicated channel instead of
-// broadcasting across the per-platform channels.
-func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
-	dir := t.TempDir()
-	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
-
-	// Pre-write a leaderboard file. Per-product keys, even if present in a
-	// stale file, should be ignored — only top10 + bottom10 are posted.
-	lb := LeaderboardData{
-		Messages: map[string]string{
-			"spot":     "spot-msg",
-			"perps":    "perps-msg",
-			"options":  "options-msg",
-			"futures":  "futures-msg",
-			"top10":    "top10-msg",
-			"bottom10": "bottom10-msg",
+// leaderboardTestFixture builds a small cfg+state with two strategies and the
+// prices needed to revalue them. Used by PostLeaderboard routing tests below.
+func leaderboardTestFixture() (*Config, *AppState, map[string]float64) {
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
+			{ID: "rsi-eth", Type: "spot", Capital: 500, Platform: "binanceus", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
 		},
 	}
-	raw, _ := json.Marshal(lb)
-	if err := os.WriteFile(leaderboardPath(cfg), raw, 0600); err != nil {
-		t.Fatalf("write leaderboard: %v", err)
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		ss := NewStrategyState(sc)
+		ss.Cash = sc.Capital + 100 // profitable
+		state.Strategies[sc.ID] = ss
 	}
+	return cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
+}
+
+// TestPostLeaderboard_DedicatedChannel verifies that when DiscordConfig.LeaderboardChannel
+// is set (wired into notifierBackend.leaderboardChannel), PostLeaderboard routes
+// the top10/bottom10 messages to the dedicated channel instead of broadcasting.
+func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
+	cfg, state, prices := leaderboardTestFixture()
 
 	mock := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{
@@ -308,7 +252,7 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 		leaderboardChannel: "lb-ch",
 	})
 
-	if err := PostLeaderboard(cfg, notifier); err != nil {
+	if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
@@ -320,30 +264,13 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 		if m.channelID != "lb-ch" {
 			t.Errorf("expected channel lb-ch, got %s (content=%q)", m.channelID, m.content)
 		}
-		if m.content != "top10-msg" && m.content != "bottom10-msg" {
-			t.Errorf("unexpected message content %q on dedicated channel", m.content)
-		}
 	}
 }
 
 // TestPostLeaderboard_FallbackRouting verifies that when no LeaderboardChannel
-// is configured, top10/bottom10 broadcast to all configured channels. Stale
-// per-product keys in the file are ignored.
+// is configured, top10/bottom10 broadcast to all configured channels.
 func TestPostLeaderboard_FallbackRouting(t *testing.T) {
-	dir := t.TempDir()
-	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
-
-	lb := LeaderboardData{
-		Messages: map[string]string{
-			"spot":     "spot-msg",
-			"top10":    "top10-msg",
-			"bottom10": "bottom10-msg",
-		},
-	}
-	raw, _ := json.Marshal(lb)
-	if err := os.WriteFile(leaderboardPath(cfg), raw, 0600); err != nil {
-		t.Fatalf("write leaderboard: %v", err)
-	}
+	cfg, state, prices := leaderboardTestFixture()
 
 	mock := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{
@@ -351,57 +278,34 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 		channels: map[string]string{"spot": "spot-ch", "perps": "perps-ch"},
 	})
 
-	if err := PostLeaderboard(cfg, notifier); err != nil {
+	if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// Expected sends:
-	//   top10    → broadcast to all unique channels (spot-ch, perps-ch) = 2
-	//   bottom10 → broadcast to all unique channels (spot-ch, perps-ch) = 2
-	// Total = 4. Stale "spot" key must be ignored.
+	// top10 → broadcast to 2 channels; bottom10 → broadcast to 2 channels = 4.
 	if len(mock.messages) != 4 {
 		t.Fatalf("expected 4 messages from fallback routing, got %d: %v", len(mock.messages), mock.messages)
 	}
 
-	for _, m := range mock.messages {
-		if m.content == "spot-msg" {
-			t.Errorf("stale per-product spot-msg should not be posted, got channel=%s", m.channelID)
-		}
-	}
-
-	// top10 and bottom10 each broadcast to both channels.
-	for _, key := range []string{"top10-msg", "bottom10-msg"} {
-		channels := map[string]bool{}
+	// Each channel should receive both top10 and bottom10 content.
+	for _, ch := range []string{"spot-ch", "perps-ch"} {
+		seen := 0
 		for _, m := range mock.messages {
-			if m.content == key {
-				channels[m.channelID] = true
+			if m.channelID == ch {
+				seen++
 			}
 		}
-		if !channels["spot-ch"] || !channels["perps-ch"] {
-			t.Errorf("%s should broadcast to spot-ch and perps-ch, got %v", key, channels)
+		if seen != 2 {
+			t.Errorf("channel %s: expected 2 messages (top10+bottom10), got %d", ch, seen)
 		}
 	}
 }
 
 // TestPostLeaderboard_MixedBackends is the regression test for the bug where
 // HasLeaderboardChannel returning true on *any* backend caused all other
-// backends to silently drop leaderboard messages. With per-backend routing,
-// Discord (with dedicated channel) should receive top10/bottom10 on lb-ch and
-// Telegram (without) should broadcast top10/bottom10 across all its channels.
+// backends to silently drop leaderboard messages.
 func TestPostLeaderboard_MixedBackends(t *testing.T) {
-	dir := t.TempDir()
-	cfg := &Config{DBFile: filepath.Join(dir, "state.db")}
-
-	lb := LeaderboardData{
-		Messages: map[string]string{
-			"top10":    "top10-msg",
-			"bottom10": "bottom10-msg",
-		},
-	}
-	raw, _ := json.Marshal(lb)
-	if err := os.WriteFile(leaderboardPath(cfg), raw, 0600); err != nil {
-		t.Fatalf("write leaderboard: %v", err)
-	}
+	cfg, state, prices := leaderboardTestFixture()
 
 	discord := &mockNotifier{}
 	telegram := &mockNotifier{}
@@ -427,7 +331,7 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		},
 	)
 
-	if err := PostLeaderboard(cfg, notifier); err != nil {
+	if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
@@ -446,19 +350,33 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		t.Fatalf("expected 8 telegram messages from broadcast routing, got %d: %v", len(telegram.messages), telegram.messages)
 	}
 
-	for _, content := range []string{"top10-msg", "bottom10-msg"} {
-		seen := map[string]bool{}
+	for _, ch := range []string{"telegram-spot", "telegram-perps", "telegram-options", "telegram-futures"} {
+		seen := 0
 		for _, m := range telegram.messages {
-			if m.content == content {
-				seen[m.channelID] = true
+			if m.channelID == ch {
+				seen++
 			}
 		}
-		expected := []string{"telegram-spot", "telegram-perps", "telegram-options", "telegram-futures"}
-		for _, ch := range expected {
-			if !seen[ch] {
-				t.Errorf("%s: expected broadcast to %s, missing (got %v)", content, ch, seen)
-			}
+		if seen != 2 {
+			t.Errorf("telegram channel %s: expected 2 messages (top10+bottom10), got %d", ch, seen)
 		}
+	}
+}
+
+// TestPostLeaderboard_NoStrategies verifies PostLeaderboard returns an error
+// when there is nothing to report (used to be a silent no-op when the file
+// didn't exist; now it surfaces clearly).
+func TestPostLeaderboard_NoStrategies(t *testing.T) {
+	cfg := &Config{}
+	state := NewAppState()
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{notifier: mock, channels: map[string]string{"spot": "spot-ch"}})
+
+	if err := PostLeaderboard(cfg, state, nil, notifier); err == nil {
+		t.Error("expected error when no strategies configured")
+	}
+	if len(mock.messages) != 0 {
+		t.Errorf("expected no messages sent, got %d", len(mock.messages))
 	}
 }
 

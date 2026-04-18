@@ -203,15 +203,18 @@ func main() {
 		runSummaryAndExit(*summary, cfg, state, notifier)
 	}
 
-	// -leaderboard mode: post pre-computed leaderboard and exit.
-	// Reads leaderboard.json (written each cycle) and posts to Discord — no
-	// price fetching or PnL computation needed, so it completes in seconds.
+	// -leaderboard mode: compute leaderboard on-demand and exit. Issue #313
+	// moved this from reading a pre-computed leaderboard.json to fetching fresh
+	// prices and building messages at invocation time — data is always current,
+	// and the scheduler no longer pays per-cycle compute/IO for data only used
+	// by this flag and the daily auto-post.
 	if *leaderboard {
 		if !notifier.HasBackends() {
 			fmt.Fprintf(os.Stderr, "No notification backends configured\n")
 			os.Exit(1)
 		}
-		if err := PostLeaderboard(cfg, notifier); err != nil {
+		prices := fetchPricesForSummary(cfg)
+		if err := PostLeaderboard(cfg, state, prices, notifier); err != nil {
 			fmt.Fprintf(os.Stderr, "Leaderboard post failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -906,10 +909,6 @@ func main() {
 		// Save state after each cycle
 		mu.Lock()
 		state.LastCycle = time.Now().UTC()
-		// Pre-compute leaderboard data so the cron job can post without computation.
-		if err := PrecomputeLeaderboard(cfg, state, prices); err != nil {
-			fmt.Printf("[WARN] Leaderboard pre-compute failed: %v\n", err)
-		}
 
 		// Periodic configurable leaderboard summaries (#308). Compute + update
 		// state.LastLeaderboardSummaries under Lock; post outside so Discord
@@ -924,10 +923,6 @@ func main() {
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
 		} else {
 			saveFailures = 0
-		}
-		// Pre-compute leaderboard data so the cron job can post without computation.
-		if err := PrecomputeLeaderboard(cfg, state, prices); err != nil {
-			fmt.Printf("[WARN] Leaderboard pre-compute failed: %v\n", err)
 		}
 
 		// #175: Decide whether to auto-post daily leaderboard (check inside lock).
@@ -954,9 +949,16 @@ func main() {
 		}
 
 		// Post leaderboard outside the lock to avoid holding mu during I/O.
+		// Issue #313: compute on-demand at post time instead of reading a
+		// pre-computed file. Build messages under RLock (state read), then
+		// post without the lock held so Discord HTTPS latency can't stall
+		// other goroutines.
 		if postLeaderboard {
 			fmt.Printf("[leaderboard] Auto-posting daily leaderboard (configured time: %s UTC)\n", cfg.LeaderboardPostTime)
-			if err := PostLeaderboard(cfg, notifier); err != nil {
+			mu.RLock()
+			lbMessages := BuildLeaderboardMessages(cfg, state, prices)
+			mu.RUnlock()
+			if err := postLeaderboardMessages(lbMessages, notifier); err != nil {
 				fmt.Printf("[WARN] Leaderboard auto-post failed: %v\n", err)
 			} else {
 				mu.Lock()
