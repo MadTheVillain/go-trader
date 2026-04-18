@@ -696,3 +696,32 @@ func TestLeaderboardSummaryConfig_ParsedFrequency(t *testing.T) {
 		}
 	}
 }
+
+// TestFindLeaderboardSummariesByChannel covers the multi-match case called out
+// in review item 3 on #309: -summary <ch> should surface every configured entry
+// sharing a channel, in config order.
+func TestFindLeaderboardSummariesByChannel(t *testing.T) {
+	cfg := &Config{
+		LeaderboardSummaries: []LeaderboardSummaryConfig{
+			{Platform: "hyperliquid", Channel: "hl-ch", Frequency: "6h"},
+			{Platform: "hyperliquid", Ticker: "ETH", Channel: "hl-ch", Frequency: "12h"},
+			{Platform: "okx", Channel: "okx-ch", Frequency: "6h"},
+		},
+	}
+
+	got := findLeaderboardSummariesByChannel(cfg, "hl-ch")
+	if len(got) != 2 {
+		t.Fatalf("hl-ch matches: got %d, want 2", len(got))
+	}
+	if got[0].Ticker != "" || got[1].Ticker != "ETH" {
+		t.Errorf("expected config order [unfiltered, ETH], got [%q, %q]", got[0].Ticker, got[1].Ticker)
+	}
+
+	if got := findLeaderboardSummariesByChannel(cfg, "okx-ch"); len(got) != 1 {
+		t.Errorf("okx-ch matches: got %d, want 1", len(got))
+	}
+
+	if got := findLeaderboardSummariesByChannel(cfg, "none"); got != nil {
+		t.Errorf("unknown channel should return nil, got %v", got)
+	}
+}

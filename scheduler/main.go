@@ -1007,8 +1007,8 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, notifier
 	}
 
 	// #308: Manual trigger for configured leaderboard summaries.
-	if lc, ok := findLeaderboardSummaryByChannel(cfg, channelKey); ok {
-		runLeaderboardSummaryAndExit(lc, cfg, state, notifier)
+	if lcs := findLeaderboardSummariesByChannel(cfg, channelKey); len(lcs) > 0 {
+		runLeaderboardSummariesAndExit(lcs, cfg, state, notifier)
 		return
 	}
 
@@ -2027,16 +2027,19 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, result *OKXResult, ex
 	return trades, detail
 }
 
-// findLeaderboardSummaryByChannel returns the first LeaderboardSummaryConfig
-// whose Channel matches channelID. Used by the -summary flag to route manual
-// triggers to configured leaderboards. (#308)
-func findLeaderboardSummaryByChannel(cfg *Config, channelID string) (LeaderboardSummaryConfig, bool) {
+// findLeaderboardSummariesByChannel returns every LeaderboardSummaryConfig
+// whose Channel matches channelID, preserving config order. A single channel
+// may have multiple entries (e.g. one unfiltered + one ticker-scoped); all are
+// returned so -summary posts what the operator configured. (#308, review item
+// 3 on #309)
+func findLeaderboardSummariesByChannel(cfg *Config, channelID string) []LeaderboardSummaryConfig {
+	var out []LeaderboardSummaryConfig
 	for _, lc := range cfg.LeaderboardSummaries {
 		if lc.Channel == channelID {
-			return lc, true
+			out = append(out, lc)
 		}
 	}
-	return LeaderboardSummaryConfig{}, false
+	return out
 }
 
 // fetchPricesForSummary fetches all mark prices needed to revalue positions
@@ -2083,20 +2086,30 @@ func fetchPricesForSummary(cfg *Config) map[string]float64 {
 	return prices
 }
 
-// runLeaderboardSummaryAndExit posts one configured leaderboard summary and exits.
-// Called by -summary <channel> when channel matches a LeaderboardSummaries entry. (#308)
-func runLeaderboardSummaryAndExit(lc LeaderboardSummaryConfig, cfg *Config, state *AppState, notifier *MultiNotifier) {
+// runLeaderboardSummariesAndExit posts every matching LeaderboardSummaryConfig
+// and exits. Prices are fetched once and shared across all entries. Each
+// empty-result entry is reported to stderr but does not abort siblings; exits
+// 1 only if every entry produced no message. (#308, review item 3 on #309)
+func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, notifier *MultiNotifier) {
 	prices := fetchPricesForSummary(cfg)
-	msg := BuildLeaderboardSummary(lc, cfg, state, prices)
-	if msg == "" {
-		fmt.Fprintf(os.Stderr, "No strategies match leaderboard summary platform=%s ticker=%s\n", lc.Platform, lc.Ticker)
+	posted := 0
+	for _, lc := range lcs {
+		msg := BuildLeaderboardSummary(lc, cfg, state, prices)
+		if msg == "" {
+			fmt.Fprintf(os.Stderr, "No strategies match leaderboard summary platform=%s ticker=%s\n", lc.Platform, lc.Ticker)
+			continue
+		}
+		if err := notifier.SendMessage(lc.Channel, msg); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Send to channel %s failed: %v\n", lc.Channel, err)
+		}
+		fmt.Println(msg)
+		fmt.Printf("-summary=%s: posted leaderboard summary (platform=%s, ticker=%s)\n", lc.Channel, lc.Platform, lc.Ticker)
+		posted++
+	}
+	if posted == 0 {
 		os.Exit(1)
 	}
-	if err := notifier.SendMessage(lc.Channel, msg); err != nil {
-		fmt.Fprintf(os.Stderr, "[WARN] Send to channel %s failed: %v\n", lc.Channel, err)
-	}
-	fmt.Println(msg)
-	fmt.Printf("-summary=%s: posted leaderboard summary (platform=%s, ticker=%s), exiting.\n", lc.Channel, lc.Platform, lc.Ticker)
+	fmt.Printf("-summary=%s: posted %d leaderboard summaries, exiting.\n", lcs[0].Channel, posted)
 	os.Exit(0)
 }
 
