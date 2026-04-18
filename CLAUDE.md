@@ -7,8 +7,10 @@
 - In git worktrees, `.venv` is NOT copied — use the main repo's venv: `<main-repo>/.venv/bin/python3`
 - Python deps managed with `uv` (see `pyproject.toml` / `uv.lock`)
 
+## Quick Flow
+- **New server:** tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
+
 ## Setup
-- **Quick flow for a new server:** tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
 - `uv sync` — install Python deps into `.venv`
 - Copy `scheduler/config.example.json` → `scheduler/config.json` and fill in API keys
 
