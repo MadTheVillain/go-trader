@@ -556,6 +556,7 @@ func TestDeriveShortName(t *testing.T) {
 		{"mean_reversion", "mr"},
 		{"volume_weighted", "vw"},
 		{"triple_ema", "tema"},
+		{"triple_ema_bidir", "temab"},
 		{"rsi_macd_combo", "rmc"},
 		{"vol_mean_reversion", "vol"},
 		{"momentum_options", "mom"},

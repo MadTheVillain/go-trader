@@ -37,6 +37,7 @@ var knownShortNames = map[string]string{
 	"mean_reversion":        "mr",
 	"volume_weighted":       "vw",
 	"triple_ema":            "tema",
+	"triple_ema_bidir":      "temab",
 	"rsi_macd_combo":        "rmc",
 	"vol_mean_reversion":    "vol",
 	"momentum_options":      "mom",
@@ -111,6 +112,7 @@ var defaultOptionsStrategies = []stratDef{
 
 var defaultPerpsStrategies = []stratDef{
 	{ID: "momentum", ShortName: "momentum"},
+	{ID: "triple_ema_bidir", ShortName: "temab"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
@@ -126,6 +128,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "rsi", ShortName: "rsi"},
 	{ID: "macd", ShortName: "macd"},
 	{ID: "breakout", ShortName: "bo"},
+	{ID: "triple_ema_bidir", ShortName: "temab"},
 	{ID: "stoch_rsi", ShortName: "stochrsi"},
 	{ID: "ichimoku_cloud", ShortName: "ichi"},
 	{ID: "order_blocks", ShortName: "ob"},
