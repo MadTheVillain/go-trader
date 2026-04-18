@@ -73,7 +73,6 @@ func makeTestState() *AppState {
 	return &AppState{
 		CycleCount:              42,
 		LastCycle:               now,
-		LastTop10Summary:        now.Add(-1 * time.Hour),
 		LastLeaderboardPostDate: "2026-04-08",
 		Strategies: map[string]*StrategyState{
 			"hl-momentum-btc": {

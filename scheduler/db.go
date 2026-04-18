@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS app_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     cycle_count INTEGER NOT NULL DEFAULT 0,
     last_cycle TEXT NOT NULL DEFAULT '',
-    last_top10_summary TEXT NOT NULL DEFAULT '',
     last_leaderboard_post_date TEXT NOT NULL DEFAULT '',
     last_leaderboard_summaries TEXT NOT NULL DEFAULT ''
 );
@@ -271,11 +270,10 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 		lbSummariesJSON = string(raw)
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO app_state (id, cycle_count, last_cycle, last_top10_summary, last_leaderboard_post_date, last_leaderboard_summaries)
-		VALUES (1, ?, ?, ?, ?, ?)`,
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO app_state (id, cycle_count, last_cycle, last_leaderboard_post_date, last_leaderboard_summaries)
+		VALUES (1, ?, ?, ?, ?)`,
 		state.CycleCount,
 		formatTime(state.LastCycle),
-		formatTime(state.LastTop10Summary),
 		state.LastLeaderboardPostDate,
 		lbSummariesJSON,
 	); err != nil {
@@ -665,9 +663,9 @@ func (sdb *StateDB) QueryClosedOptionPositions(strategyID, underlying string, si
 func (sdb *StateDB) LoadState() (*AppState, error) {
 	// 1. Load app_state singleton.
 	var cycleCount int
-	var lastCycleStr, lastTop10Str, lastLeaderboardDate, lastLBSummariesJSON string
-	err := sdb.db.QueryRow("SELECT cycle_count, last_cycle, last_top10_summary, last_leaderboard_post_date, last_leaderboard_summaries FROM app_state WHERE id = 1").
-		Scan(&cycleCount, &lastCycleStr, &lastTop10Str, &lastLeaderboardDate, &lastLBSummariesJSON)
+	var lastCycleStr, lastLeaderboardDate, lastLBSummariesJSON string
+	err := sdb.db.QueryRow("SELECT cycle_count, last_cycle, last_leaderboard_post_date, last_leaderboard_summaries FROM app_state WHERE id = 1").
+		Scan(&cycleCount, &lastCycleStr, &lastLeaderboardDate, &lastLBSummariesJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -685,7 +683,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	state := &AppState{
 		CycleCount:               cycleCount,
 		LastCycle:                parseTime(lastCycleStr),
-		LastTop10Summary:         parseTime(lastTop10Str),
 		LastLeaderboardPostDate:  lastLeaderboardDate,
 		LastLeaderboardSummaries: lbSummaries,
 		Strategies:               make(map[string]*StrategyState),

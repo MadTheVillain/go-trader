@@ -295,62 +295,6 @@ func PostLeaderboard(cfg *Config, notifier *MultiNotifier) error {
 	return nil
 }
 
-// FormatPlatformTopN builds a top-N summary message for strategies on a given platform,
-// sorted by PnL% descending. N is controlled by Discord.LeaderboardTopN (default 5).
-// Returns "" if no strategies exist for that platform.
-func FormatPlatformTopN(platform, icon, title string, cfg *Config, state *AppState, prices map[string]float64) string {
-	var entries []LeaderboardEntry
-	for _, sc := range cfg.Strategies {
-		if sc.Platform != platform {
-			continue
-		}
-		ss := state.Strategies[sc.ID]
-		if ss == nil {
-			continue
-		}
-		pv := PortfolioValue(ss, prices)
-		initCap := EffectiveInitialCapital(sc, ss)
-		pnl := pv - initCap
-		pnlPct := 0.0
-		if initCap > 0 {
-			pnlPct = (pnl / initCap) * 100
-		}
-		entries = append(entries, LeaderboardEntry{
-			ID:      sc.ID,
-			Type:    sc.Type,
-			Value:   pv,
-			Capital: initCap,
-			PnL:     pnl,
-			PnLPct:  pnlPct,
-			Trades:  len(ss.TradeHistory),
-		})
-	}
-
-	if len(entries) == 0 {
-		return ""
-	}
-
-	// Sort by PnL% descending, take top N.
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].PnLPct > entries[j].PnLPct
-	})
-	topN := leaderboardTopN(cfg)
-	n := topN
-	if len(entries) < n {
-		n = len(entries)
-	}
-
-	return formatLeaderboardMessage(icon, title, entries[:n], false, n)
-}
-
-// FormatHyperliquidTopN builds a top-N summary message for hyperliquid strategies,
-// sorted by PnL% descending. N is controlled by Discord.LeaderboardTopN (default 5).
-// Returns "" if no hyperliquid strategies exist.
-func FormatHyperliquidTopN(cfg *Config, state *AppState, prices map[string]float64) string {
-	title := fmt.Sprintf("Hyperliquid Top %d", leaderboardTopN(cfg))
-	return FormatPlatformTopN("hyperliquid", "⚡", title, cfg, state, prices)
-}
-
 // titleCase capitalizes the first rune of s and lowercases the rest.
 // Used for human-readable platform names in leaderboard titles.
 func titleCase(s string) string {

@@ -79,7 +79,6 @@ type AppState struct {
 	CorrelationSnapshot *CorrelationSnapshot      `json:"correlation_snapshot,omitempty"`
 	// ReconciliationGaps is ephemeral — recomputed each sync cycle, not persisted to SQLite.
 	ReconciliationGaps      map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
-	LastTop10Summary        time.Time                     `json:"last_top10_summary,omitempty"`
 	LastLeaderboardPostDate string                        `json:"last_leaderboard_post_date,omitempty"`
 	// LastLeaderboardSummaries tracks the last-post time for each configured
 	// leaderboard_summaries entry, keyed by LeaderboardSummaryConfig.Key().

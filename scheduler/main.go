@@ -263,11 +263,6 @@ func main() {
 	saveFailures := 0
 	resetGoroutineRunning := false
 
-	var top10Freq time.Duration
-	if cfg.HyperliquidTop10Freq != "" {
-		top10Freq, _ = time.ParseDuration(cfg.HyperliquidTop10Freq)
-	}
-
 	// Main loop
 	for {
 		cycleStart := time.Now()
@@ -916,15 +911,6 @@ func main() {
 			fmt.Printf("[WARN] Leaderboard pre-compute failed: %v\n", err)
 		}
 
-		// Periodic hyperliquid top-10 summary (#176).
-		var top10Msg string
-		if top10Freq > 0 && time.Since(state.LastTop10Summary) >= top10Freq {
-			top10Msg = FormatHyperliquidTopN(cfg, state, prices)
-			if top10Msg != "" {
-				state.LastTop10Summary = time.Now().UTC()
-			}
-		}
-
 		// Periodic configurable leaderboard summaries (#308). Compute + update
 		// state.LastLeaderboardSummaries under Lock; post outside so Discord
 		// HTTPS latency can't stall the scheduler cycle.
@@ -956,13 +942,6 @@ func main() {
 			}
 		}
 		mu.Unlock()
-
-		// Post top-10 outside the lock to avoid holding mu during I/O.
-		// Route to dedicated leaderboard channel; falls back to platform channel.
-		if top10Msg != "" {
-			notifier.SendToChannel("hyperliquid-leaderboard", "hyperliquid", top10Msg)
-			fmt.Println("[top10] Posted hyperliquid top-10 summary")
-		}
 
 		// Post any configurable leaderboard summaries (#308) outside the lock.
 		for _, p := range duePending {

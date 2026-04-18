@@ -93,9 +93,8 @@ type Config struct {
 	StatusToken          string                     `json:"-"`                 // loaded from STATUS_AUTH_TOKEN env var only
 	Discord              DiscordConfig              `json:"discord"`
 	Telegram             TelegramConfig             `json:"telegram,omitempty"`
-	AutoUpdate           string                     `json:"auto_update,omitempty"`            // "off", "daily", "heartbeat" (default: "off")
-	HyperliquidTop10Freq string                     `json:"hyperliquid_top10_freq,omitempty"` // e.g. "6h" — post top-10 HL summary at this interval (default: "" = disabled)
-	LeaderboardPostTime  string                     `json:"leaderboard_post_time,omitempty"`  // "HH:MM" in UTC; auto-post daily leaderboard at this time (empty = disabled)
+	AutoUpdate           string                     `json:"auto_update,omitempty"`           // "off", "daily", "heartbeat" (default: "off")
+	LeaderboardPostTime  string                     `json:"leaderboard_post_time,omitempty"` // "HH:MM" in UTC; auto-post daily leaderboard at this time (empty = disabled)
 	Strategies           []StrategyConfig           `json:"strategies"`
 	PortfolioRisk        *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
 	Correlation          *CorrelationConfig         `json:"correlation,omitempty"`
@@ -497,16 +496,6 @@ func ValidateConfig(cfg *Config) error {
 		}
 		if cfg.PortfolioRisk.WarnThresholdPct <= 0 || cfg.PortfolioRisk.WarnThresholdPct > 100 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.warn_threshold_pct must be in (0, 100], got %g", cfg.PortfolioRisk.WarnThresholdPct))
-		}
-	}
-
-	// Validate hyperliquid_top10_freq if set.
-	if cfg.HyperliquidTop10Freq != "" {
-		d, err := time.ParseDuration(cfg.HyperliquidTop10Freq)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("hyperliquid_top10_freq: invalid duration %q: %v", cfg.HyperliquidTop10Freq, err))
-		} else if d < 1*time.Minute {
-			errs = append(errs, fmt.Sprintf("hyperliquid_top10_freq: must be >= 1m, got %s", cfg.HyperliquidTop10Freq))
 		}
 	}
 
