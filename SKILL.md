@@ -4,6 +4,8 @@
 
 This is a self-contained setup guide for AI agents. Give this file to any AI coding agent and it will handle the full installation — cloning the repo, installing dependencies, configuring Discord/strategies/risk, building, and starting the service.
 
+**Quick flow for a new server:** tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
+
 **For OpenClaw agents:** This is the skill entry point. Read it when a user says "set up go-trader", "install go trading bot", or "configure go-trader".
 
 ---
@@ -417,8 +419,8 @@ If the agent is running inside OpenClaw and Discord was configured, add the chan
 
 Or via CLI:
 ```bash
-openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${SPOT_CHANNEL}.requireMention" false
-openclaw config set "channels.discord.guilds.${GUILD_ID}.channels.${OPTIONS_CHANNEL}.requireMention" false
+openclaw config set "channels.discord.guilds.<GUILD_ID>.channels.<SPOT_CHANNEL>.requireMention" false
+openclaw config set "channels.discord.guilds.<GUILD_ID>.channels.<OPTIONS_CHANNEL>.requireMention" false
 ```
 
 ### 7c. Confirm with User
