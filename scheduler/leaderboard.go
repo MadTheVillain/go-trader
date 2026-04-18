@@ -29,10 +29,9 @@ func leaderboardTopN(cfg *Config) int {
 }
 
 // BuildLeaderboardMessages computes the aggregate top-N / bottom-N leaderboard
-// messages from the current state. Returned map keys are "top10" and "bottom10"
-// (names retained for continuity with the Discord channel routing keys — the
-// actual entry count is controlled by Discord.LeaderboardTopN). Returns nil if
-// no strategies have state. Issue #313 moved this to an on-demand compute
+// messages from the current state. Returned map keys are "top" and "bottom";
+// the actual entry count is controlled by Discord.LeaderboardTopN. Returns nil
+// if no strategies have state. Issue #313 moved this to an on-demand compute
 // (previously written to leaderboard.json every cycle).
 func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64) map[string]string {
 	var allEntries []LeaderboardEntry
@@ -67,13 +66,13 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 
 	topN := leaderboardTopN(cfg)
 	return map[string]string{
-		"top10":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN),
-		"bottom10": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN),
+		"top":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN),
+		"bottom": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN),
 	}
 }
 
 // formatLeaderboardMessage formats a leaderboard message for a sorted slice of entries.
-// Used by formatAllTimeMessage (top10/bottom10) and BuildLeaderboardSummary (per-platform summaries).
+// Used by formatAllTimeMessage (top/bottom) and BuildLeaderboardSummary (per-platform summaries).
 // Callers are responsible for passing a positive topN (see leaderboardTopN).
 func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int) string {
 	// Sort by PnL% descending.
@@ -206,7 +205,7 @@ func postLeaderboardMessages(messages map[string]string, notifier *MultiNotifier
 	// Routing is decided per-backend inside the notifier: backends with a
 	// dedicated leaderboard channel route there, others fall back to broadcast
 	// across all configured channels. Issue #310.
-	order := []string{"top10", "bottom10"}
+	order := []string{"top", "bottom"}
 	first := true
 	for _, key := range order {
 		msg, ok := messages[key]
