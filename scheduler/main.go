@@ -958,9 +958,15 @@ func main() {
 		// post without the lock held so Discord HTTPS latency can't stall
 		// other goroutines.
 		if postLeaderboard {
+			// Persist LastLeaderboardPostDate immediately so a crash before
+			// the next cycle's SaveState cannot cause a duplicate daily post
+			// on restart.
 			stampDate := func() {
 				mu.Lock()
 				state.LastLeaderboardPostDate = time.Now().UTC().Format("2006-01-02")
+				if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
+					fmt.Printf("[WARN] Leaderboard post-date save failed: %v\n", err)
+				}
 				mu.Unlock()
 			}
 			if len(cfg.Strategies) == 0 {

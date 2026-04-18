@@ -54,13 +54,13 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
 
-	// Only aggregate top10/bottom10 messages are produced; per-product sections
+	// Only aggregate top/bottom messages are produced; per-product sections
 	// were removed in issue #310.
-	if _, ok := messages["top10"]; !ok {
-		t.Error("Missing top10 leaderboard message")
+	if _, ok := messages["top"]; !ok {
+		t.Error("Missing top leaderboard message")
 	}
-	if _, ok := messages["bottom10"]; !ok {
-		t.Error("Missing bottom10 leaderboard message")
+	if _, ok := messages["bottom"]; !ok {
+		t.Error("Missing bottom leaderboard message")
 	}
 	for _, key := range []string{"spot", "perps", "options", "futures"} {
 		if _, ok := messages[key]; ok {
@@ -68,24 +68,24 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 		}
 	}
 
-	top10Msg := messages["top10"]
-	if top10Msg == "" {
-		t.Fatal("top10 message is empty")
+	topMsg := messages["top"]
+	if topMsg == "" {
+		t.Fatal("top message is empty")
 	}
-	if !containsStr(top10Msg, "sma-btc") {
-		t.Error("top10 message should contain sma-btc")
+	if !containsStr(topMsg, "sma-btc") {
+		t.Error("top message should contain sma-btc")
 	}
-	if !containsStr(top10Msg, "Top All-Time Performers") {
-		t.Error("top10 message should contain title")
+	if !containsStr(topMsg, "Top All-Time Performers") {
+		t.Error("top message should contain title")
 	}
-	if !containsStr(top10Msg, "TOTAL") {
-		t.Error("top10 message should contain TOTAL row")
+	if !containsStr(topMsg, "TOTAL") {
+		t.Error("top message should contain TOTAL row")
 	}
-	if !containsStr(top10Msg, "winning") {
-		t.Error("top10 message should contain winning/losing/flat counts")
+	if !containsStr(topMsg, "winning") {
+		t.Error("top message should contain winning/losing/flat counts")
 	}
-	if !containsStr(top10Msg, "Trades") {
-		t.Error("top10 message should contain Trades column header")
+	if !containsStr(topMsg, "Trades") {
+		t.Error("top message should contain Trades column header")
 	}
 }
 
@@ -191,33 +191,33 @@ func TestBuildLeaderboardMessages_TopN(t *testing.T) {
 		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
 
-	top10Msg := messages["top10"]
-	if top10Msg == "" {
-		t.Fatal("Expected non-empty top10 all-time message")
+	topMsg := messages["top"]
+	if topMsg == "" {
+		t.Fatal("Expected non-empty top all-time message")
 	}
 	// Top 3 by PnL%: sma-s07, sma-s06, sma-s05.
-	if !containsStr(top10Msg, "sma-s07") {
-		t.Error("top10 all-time should contain sma-s07 when top_n=3")
+	if !containsStr(topMsg, "sma-s07") {
+		t.Error("top all-time should contain sma-s07 when top_n=3")
 	}
-	if !containsStr(top10Msg, "sma-s05") {
-		t.Error("top10 all-time should contain sma-s05 when top_n=3")
+	if !containsStr(topMsg, "sma-s05") {
+		t.Error("top all-time should contain sma-s05 when top_n=3")
 	}
-	if containsStr(top10Msg, "sma-s04") {
-		t.Error("top10 all-time should not contain sma-s04 when top_n=3")
+	if containsStr(topMsg, "sma-s04") {
+		t.Error("top all-time should not contain sma-s04 when top_n=3")
 	}
 
-	bottom10Msg := messages["bottom10"]
-	if bottom10Msg == "" {
-		t.Fatal("Expected non-empty bottom10 all-time message")
+	bottomMsg := messages["bottom"]
+	if bottomMsg == "" {
+		t.Fatal("Expected non-empty bottom all-time message")
 	}
-	if !containsStr(bottom10Msg, "sma-s00") {
-		t.Error("bottom10 all-time should contain sma-s00 when top_n=3")
+	if !containsStr(bottomMsg, "sma-s00") {
+		t.Error("bottom all-time should contain sma-s00 when top_n=3")
 	}
-	if !containsStr(bottom10Msg, "sma-s02") {
-		t.Error("bottom10 all-time should contain sma-s02 when top_n=3")
+	if !containsStr(bottomMsg, "sma-s02") {
+		t.Error("bottom all-time should contain sma-s02 when top_n=3")
 	}
-	if containsStr(bottom10Msg, "sma-s03") {
-		t.Error("bottom10 all-time should not contain sma-s03 when top_n=3")
+	if containsStr(bottomMsg, "sma-s03") {
+		t.Error("bottom all-time should not contain sma-s03 when top_n=3")
 	}
 }
 
@@ -241,7 +241,7 @@ func leaderboardTestFixture() (*Config, *AppState, map[string]float64) {
 
 // TestPostLeaderboard_DedicatedChannel verifies that when DiscordConfig.LeaderboardChannel
 // is set (wired into notifierBackend.leaderboardChannel), PostLeaderboard routes
-// the top10/bottom10 messages to the dedicated channel instead of broadcasting.
+// the top/bottom messages to the dedicated channel instead of broadcasting.
 func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 	cfg, state, prices := leaderboardTestFixture()
 
@@ -256,7 +256,7 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// Only top10 + bottom10 should land on the dedicated channel.
+	// Only top + bottom should land on the dedicated channel.
 	if len(mock.messages) != 2 {
 		t.Fatalf("expected 2 messages on dedicated channel, got %d: %v", len(mock.messages), mock.messages)
 	}
@@ -268,7 +268,7 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 }
 
 // TestPostLeaderboard_FallbackRouting verifies that when no LeaderboardChannel
-// is configured, top10/bottom10 broadcast to all configured channels.
+// is configured, top/bottom broadcast to all configured channels.
 func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 	cfg, state, prices := leaderboardTestFixture()
 
@@ -282,12 +282,12 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// top10 → broadcast to 2 channels; bottom10 → broadcast to 2 channels = 4.
+	// top → broadcast to 2 channels; bottom → broadcast to 2 channels = 4.
 	if len(mock.messages) != 4 {
 		t.Fatalf("expected 4 messages from fallback routing, got %d: %v", len(mock.messages), mock.messages)
 	}
 
-	// Each channel should receive both top10 and bottom10 content.
+	// Each channel should receive both top and bottom content.
 	for _, ch := range []string{"spot-ch", "perps-ch"} {
 		seen := 0
 		for _, m := range mock.messages {
@@ -296,7 +296,7 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 			}
 		}
 		if seen != 2 {
-			t.Errorf("channel %s: expected 2 messages (top10+bottom10), got %d", ch, seen)
+			t.Errorf("channel %s: expected 2 messages (top+bottom), got %d", ch, seen)
 		}
 	}
 }
@@ -335,7 +335,7 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// Discord: top10 + bottom10 should land on discord-lb.
+	// Discord: top + bottom should land on discord-lb.
 	if len(discord.messages) != 2 {
 		t.Fatalf("expected 2 discord messages on discord-lb, got %d: %v", len(discord.messages), discord.messages)
 	}
@@ -345,7 +345,7 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		}
 	}
 
-	// Telegram: top10 and bottom10 each broadcast to all 4 channels = 8 total.
+	// Telegram: top and bottom each broadcast to all 4 channels = 8 total.
 	if len(telegram.messages) != 8 {
 		t.Fatalf("expected 8 telegram messages from broadcast routing, got %d: %v", len(telegram.messages), telegram.messages)
 	}
@@ -358,7 +358,7 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 			}
 		}
 		if seen != 2 {
-			t.Errorf("telegram channel %s: expected 2 messages (top10+bottom10), got %d", ch, seen)
+			t.Errorf("telegram channel %s: expected 2 messages (top+bottom), got %d", ch, seen)
 		}
 	}
 }
@@ -372,8 +372,12 @@ func TestPostLeaderboard_NoStrategies(t *testing.T) {
 	mock := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{notifier: mock, channels: map[string]string{"spot": "spot-ch"}})
 
-	if err := PostLeaderboard(cfg, state, nil, notifier); err == nil {
+	err := PostLeaderboard(cfg, state, nil, notifier)
+	if err == nil {
 		t.Error("expected error when no strategies configured")
+	}
+	if err != nil && !strings.Contains(err.Error(), "no strategies to leaderboard") {
+		t.Errorf("unexpected error message: %q", err.Error())
 	}
 	if len(mock.messages) != 0 {
 		t.Errorf("expected no messages sent, got %d", len(mock.messages))
