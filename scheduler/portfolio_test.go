@@ -1164,6 +1164,24 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 	}
 }
 
+// #330 (final review) — a catastrophically-losing flip must still close the
+// position even when post-close margin can't fund the new side. Without
+// this fallback, a deep-underwater bidirectional strategy would be worse
+// at exiting than a legacy long-only one: both the close AND open legs
+// would be dropped.
+func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
+	// long 1.0 ETH @ 2000, price crashes to 500, 1x leverage, cash=100.
+	// closePnL = 1.0 * (500 - 2000) = -1500 → effectiveCash = 100 - 1500 = -1400.
+	// Budget would be -1400 * 1 * 0.95 = -1330 (< 1) → fallback to close-only.
+	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, 1.0, "long", true)
+	if !ok {
+		t.Fatalf("expected ok (should degrade to close-only, not abort); reason=%q", reason)
+	}
+	if size != 1.0 {
+		t.Errorf("size = %g, want 1.0 (close-only fallback when post-close margin is negative)", size)
+	}
+}
+
 // #335 — profitable flips should size LARGER than pre-close sizing: the
 // close leg adds realized gains to available margin, letting the new side
 // take a proportionally bigger position. Mirror of the losing-flip case.

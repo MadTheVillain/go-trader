@@ -270,12 +270,16 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 		}
 		budget := effectiveCash * sizingLeverage * 0.95
 		if budget < 1 || price <= 0 {
+			// Flip + catastrophic drawdown (realized loss wipes out post-close
+			// margin): the new side can't be sized, but the close leg still
+			// must fire — otherwise a deep-underwater bidirectional strategy
+			// would be worse at exiting than a legacy long-only one. Degrade
+			// to close-only sizing as the docstring promises.
+			if flipping {
+				return posQty, true, ""
+			}
 			label := "buy"
-			if flipping && isBuy {
-				label = "buy (flip)"
-			} else if flipping {
-				label = "sell (flip)"
-			} else if !isBuy {
+			if !isBuy {
 				label = "sell (short-open)"
 			}
 			return 0, false, fmt.Sprintf("insufficient cash ($%.2f effective) for live %s", effectiveCash, label)
@@ -362,15 +366,13 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // leveraged budget with slippage applied.
 //
 // fillOID/fillFee carry exchange metadata for live fills (empty/zero for
-// paper). They are stamped ONLY on the trade that represents the new
-// position — the opening trade on signal=1, the closing trade on
-// signal=-1. The rationale: one live fill = one exchange fee; if a buy
-// signal encounters an existing short, ExecutePerpsSignal synthesizes a
-// close-short + open-long pair for in-memory accounting, but the real
-// exchange action was the single fill that opened the long. Stamping the
-// same fee on both legs would double-count it in analytics. The close-leg
-// row therefore carries empty exchange metadata — accurate, since no
-// distinct exchange order closed it. See #289.
+// paper). One live fill = one exchange fee; if a signal encounters an
+// opposite-side position, ExecutePerpsSignal synthesizes a close+open
+// pair for in-memory accounting, but the real exchange action was the
+// single fill that opened the new side. Stamping the same fee on both
+// synthetic legs would double-count it in analytics — so only the
+// opening trade carries fillOID/fillFee; the close leg carries empty
+// exchange metadata. See #289.
 //
 // allowShorts toggles bidirectional semantics (#328). When true, signal=-1
 // from flat opens a short, and signal=-1 on an existing long flips to a
@@ -378,14 +380,6 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 // which already closes-and-flips). When false (default), signal=-1 only
 // closes a long and never opens a short — the legacy long-only behavior
 // that strategies like triple_ema and rsi_macd_combo depend on.
-//
-// Fill metadata rationale: one live fill = one exchange fee; if a signal
-// encounters an opposite-side position, ExecutePerpsSignal synthesizes a
-// close+open pair for in-memory accounting, but the real exchange action
-// was the single fill that opened the new side. Stamping the same fee on
-// both legs would double-count it in analytics. The close leg therefore
-// carries empty exchange metadata — accurate, since no distinct exchange
-// order closed it. See #289.
 func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
 	if signal == 0 {
 		return 0, nil
@@ -509,8 +503,9 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 		tradesExecuted++
 
 	} else if signal == -1 { // Sell
-		// Dedupe: already short and allowShorts means nothing new to do (mirrors
-		// the "already long, skipping buy" branch above).
+		// Dedupe: already short and allowShorts means nothing new to do —
+		// symmetric mirror of the "Already long ... skipping buy" branch at
+		// portfolio.go:408 in the signal==1 block above.
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" && allowShorts {
 			logger.Info("Already short %s (qty=%.6f), skipping sell", symbol, pos.Quantity)
 			return 0, nil
