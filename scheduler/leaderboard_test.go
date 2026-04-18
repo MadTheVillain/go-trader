@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -618,6 +619,13 @@ func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	}
 	if !containsStr(msg, "hl-rsi-eth") || !containsStr(msg, "hl-mom-eth") {
 		t.Errorf("Expected both ETH strategies, got:\n%s", msg)
+	}
+	// Sort order: hl-rsi-eth yields +$100/$500 = +20%; hl-mom-eth yields
+	// +$100/$800 = +12.5%. Higher PnL% must appear first. (#309 review nit)
+	rsiIdx := strings.Index(msg, "hl-rsi-eth")
+	momIdx := strings.Index(msg, "hl-mom-eth")
+	if rsiIdx < 0 || momIdx < 0 || rsiIdx >= momIdx {
+		t.Errorf("Expected hl-rsi-eth (+20%%) before hl-mom-eth (+12.5%%), got rsi=%d mom=%d in:\n%s", rsiIdx, momIdx, msg)
 	}
 }
 
