@@ -570,7 +570,10 @@ func (r *RiskState) MarshalPendingHLCloseJSON() string {
 
 // UnmarshalPendingHLCloseJSON restores PendingHyperliquidCircuitClose from DB.
 func (r *RiskState) UnmarshalPendingHLCloseJSON(raw string) {
-	if r == nil || raw == "" {
+	if r == nil {
+		return
+	}
+	if raw == "" {
 		r.PendingHyperliquidCircuitClose = nil
 		return
 	}
