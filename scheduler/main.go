@@ -552,11 +552,11 @@ func main() {
 			if !portfolioAllowed {
 				killSwitchFired = true
 				fmt.Printf("[CRITICAL] Portfolio kill switch: %s\n", portfolioReason)
-				for _, sc := range cfg.Strategies {
-					if s, ok := state.Strategies[sc.ID]; ok {
-						forceCloseAllPositions(s, prices, nil)
-					}
-				}
+				// Virtual state mutation deferred until live closes confirm
+				// flat — see below. Without that gate, virtual state diverged
+				// from the exchange (#341): closing virtually but never sending
+				// the reduce-only order left on-chain positions live, and once
+				// virtual was empty no future cycle could detect the leak.
 			}
 			notionalBlocked = nb
 			if notionalBlocked {
@@ -564,9 +564,48 @@ func main() {
 			}
 			mu.Unlock()
 
-			if killSwitchFired && notifier.HasBackends() {
-				msg := fmt.Sprintf("**PORTFOLIO KILL SWITCH**\n%s\nAll positions force-closed. Manual reset required.", portfolioReason)
-				notifier.SendToAllChannels(msg)
+			// #341: Submit reduce-only market closes to Hyperliquid for every
+			// non-zero on-chain position belonging to a configured live HL
+			// strategy. The planning step (planKillSwitchClose) runs OUTSIDE
+			// the lock — close_hyperliquid_position.py is a subprocess that
+			// can take seconds. HL-only this PR; OKX/Robinhood/TopStep have
+			// the same underlying bug but route orders through subprocesses
+			// without a native Go on-chain fetcher (tracked separately).
+			//
+			// Latch semantics: virtual state is mutated only when
+			// plan.OnChainConfirmedFlat is true. Otherwise the kill switch
+			// stays latched and the next cycle re-enters this branch
+			// (CheckPortfolioRisk early-returns false while KillSwitchActive
+			// is true) and retries.
+			var plan KillSwitchClosePlan
+			if killSwitchFired {
+				plan = planKillSwitchClose(
+					hlAddr,
+					hlStateFetched,
+					hlPositions,
+					hlLiveAll,
+					portfolioReason,
+					90*time.Second,
+					defaultHyperliquidLiveCloser,
+					defaultHLStateFetcher,
+				)
+				for _, line := range plan.LogLines {
+					fmt.Println(line)
+				}
+			}
+
+			if killSwitchFired && plan.OnChainConfirmedFlat {
+				mu.Lock()
+				for _, sc := range cfg.Strategies {
+					if s, ok := state.Strategies[sc.ID]; ok {
+						forceCloseAllPositions(s, prices, nil)
+					}
+				}
+				mu.Unlock()
+			}
+
+			if killSwitchFired && notifier.HasBackends() && plan.DiscordMessage != "" {
+				notifier.SendToAllChannels(plan.DiscordMessage)
 			}
 
 			// Warning alert: drawdown approaching kill switch threshold.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -1146,5 +1147,223 @@ func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
 	}
 	if _, ok := raw["reconciliation_gaps"]; ok {
 		t.Error("reconciliation_gaps should be omitted when nil/empty")
+	}
+}
+
+// --- forceCloseHyperliquidLive tests (#341) ---
+//
+// These verify the kill-switch live close helper that was missing pre-#341.
+// The helper closes on-chain positions directly via the HL SDK's market_close
+// (reduce-only by construction), regardless of which strategy "owns" them, so
+// shared coins where reconciliation deliberately does not overwrite virtual
+// (#258) are still liquidated when the portfolio kill switch fires.
+
+// fakeCloser builds a HyperliquidLiveCloser test double that records every
+// invocation and returns either a canned success or an error per coin.
+func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
+	var calls []string
+	closer := func(symbol string) (*HyperliquidCloseResult, error) {
+		calls = append(calls, symbol)
+		if err, ok := errs[symbol]; ok {
+			return nil, err
+		}
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 100}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	return closer, &calls
+}
+
+// Non-shared coin: a single live HL strategy for ETH with an on-chain position
+// → close is submitted, no errors. Verifies the basic happy path that didn't
+// exist before #341 (the kill switch never called any exchange API).
+func TestForceCloseHyperliquidLive_NonSharedCoin(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-ema-eth-live", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 0.517, EntryPrice: 3000},
+	}
+
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
+
+	if len(report.Errors) != 0 {
+		t.Errorf("expected no errors, got %v", report.Errors)
+	}
+	if got, want := report.ClosedCoins, []string{"ETH"}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("ClosedCoins = %v, want %v", got, want)
+	}
+	if got, want := *calls, []string{"ETH"}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("closer calls = %v, want %v", got, want)
+	}
+}
+
+// Shared coin with empty virtual state: two strategies both trade ETH on the
+// same wallet. Per-strategy reconciliation skips shared coins (#258), so
+// virtual state is empty — but on-chain has 0.517 ETH long. The kill switch
+// must still close it. Critical regression test for #341 root cause.
+func TestForceCloseHyperliquidLive_SharedCoinEmptyVirtual(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-tema-eth-live", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"triple_ema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-rmc-eth-live", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"rsi_macd_combo", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 0.517, EntryPrice: 3000},
+	}
+
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
+
+	if len(report.Errors) != 0 {
+		t.Errorf("expected no errors, got %v", report.Errors)
+	}
+	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
+		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
+	}
+	// Crucially: closer is invoked exactly once for ETH, not per-strategy.
+	// The HL SDK's market_close acts on the net on-chain position so a single
+	// reduce-only order liquidates the shared exposure.
+	if len(*calls) != 1 || (*calls)[0] != "ETH" {
+		t.Errorf("expected exactly 1 closer call for ETH, got %v", *calls)
+	}
+}
+
+// Net-zero szi: when bidirectional strategies on the same wallet hold equal-
+// and-opposite virtual positions that net to zero on-chain, kill switch must
+// treat the coin as already flat. Submitting a zero-size order would have the
+// HL API reject it and would inflate Errors with a meaningless failure that
+// keeps the kill switch latched forever.
+func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-bidir-eth-live", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"triple_ema_bidir", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 0, EntryPrice: 3000},
+	}
+
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
+
+	if len(report.Errors) != 0 {
+		t.Errorf("expected no errors for net-zero coin, got %v", report.Errors)
+	}
+	if len(report.ClosedCoins) != 0 {
+		t.Errorf("ClosedCoins should be empty for already-flat coin, got %v", report.ClosedCoins)
+	}
+	if len(report.AlreadyFlat) != 1 || report.AlreadyFlat[0] != "ETH" {
+		t.Errorf("AlreadyFlat = %v, want [ETH]", report.AlreadyFlat)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("closer must not be invoked for zero-szi coin, got calls=%v", *calls)
+	}
+}
+
+// Short positions are closed identically to longs because the HL SDK's
+// market_close infers direction from the current position sign. The Go layer
+// only needs to detect non-zero szi and submit one close per coin. This test
+// guards the implicit assumption that we don't need separate buy/sell branches
+// here — and that overshooting cannot flip the position because market_close
+// is reduce-only by SDK construction (reduce_only=True is hard-coded in
+// hyperliquid.exchange.Exchange.market_close inside the SDK).
+func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-bidir-eth-live", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"triple_ema_bidir", "ETH", "1h", "--mode=live"}, AllowShorts: true},
+	}
+	positions := []HLPosition{
+		{Coin: "ETH", Size: -1.234, EntryPrice: 3000},
+	}
+
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
+
+	if len(report.Errors) != 0 {
+		t.Errorf("expected no errors, got %v", report.Errors)
+	}
+	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
+		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "ETH" {
+		t.Errorf("closer calls = %v, want [ETH]", *calls)
+	}
+}
+
+// Close failure: when the SDK call errors (network, exchange downtime, rate
+// limit), the coin lands in Errors so the caller keeps the kill switch latched
+// and retries next cycle. Without this, virtual state would be cleared while
+// on-chain still has exposure and no future cycle could detect the leak (the
+// original #341 failure mode, just with the close attempt added).
+func TestForceCloseHyperliquidLive_ClosePartialFailure(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 0.5, EntryPrice: 3000},
+		{Coin: "BTC", Size: 0.01, EntryPrice: 60000},
+	}
+	closeErr := fmt.Errorf("hl rate limited")
+	closer, _ := fakeCloser(map[string]error{"BTC": closeErr})
+
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
+
+	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
+		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
+	}
+	if got, ok := report.Errors["BTC"]; !ok || got == nil {
+		t.Errorf("expected BTC in Errors, got %v", report.Errors)
+	}
+	if _, ok := report.Errors["ETH"]; ok {
+		t.Errorf("ETH should not be in Errors")
+	}
+}
+
+// Unowned on-chain coin: if some other system has opened a position on this
+// wallet for a coin no live HL strategy in our config trades, the kill switch
+// must NOT touch it. Liquidating positions we don't own is unsafe — the
+// operator may be holding manual hedges. Such positions are surfaced as
+// warnings by reconcileHyperliquidAccountPositions, not auto-closed.
+func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
+	hlLiveAll := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 0.5},
+		{Coin: "DOGE", Size: 1000}, // not configured — manual / external
+	}
+
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
+
+	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
+		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
+	}
+	for _, c := range *calls {
+		if c == "DOGE" {
+			t.Errorf("closer must not be invoked for unowned coin DOGE")
+		}
+	}
+}
+
+// Empty inputs: with no live HL strategies configured (e.g. an all-spot deploy
+// that nonetheless somehow tripped the kill switch), the helper is a clean
+// no-op. The caller's onChainConfirmedFlat check then proceeds straight to
+// virtual state mutation, matching pre-#341 behavior for non-HL deployments.
+func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
+	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string) (*HyperliquidCloseResult, error) {
+		t.Fatalf("closer should not be called with empty inputs")
+		return nil, nil
+	})
+	if len(report.ClosedCoins) != 0 || len(report.AlreadyFlat) != 0 || len(report.Errors) != 0 {
+		t.Errorf("expected empty report, got %+v", report)
 	}
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -306,5 +308,107 @@ func TestContractSpecJSON(t *testing.T) {
 	}
 	if spec.Margin != 6600 {
 		t.Errorf("Margin = %g, want 6600", spec.Margin)
+	}
+}
+
+// --- RunHyperliquidClose contract tests (#341) ---
+//
+// RunHyperliquidClose has FIVE distinct return paths and the kill-switch
+// correctness depends on each one returning the right (result, err) shape:
+//
+//   1. exit 0 + valid JSON + Error == ""   → (result, nil) — clean success
+//   2. exit 0 + valid JSON + Error != ""   → (result, err) — anomalous; envelope wins
+//   3. exit !=0 + valid JSON + Error != "" → (result, err) — expected failure path
+//   4. exit !=0 + valid JSON + Error == "" → (result, err) — defensive; never silently OK
+//   5. malformed JSON                       → (nil, err)   — always failure
+//
+// Without these tests, a future "simplification" of the parse logic could
+// collapse case (4) into success, reintroducing the #341-class bug at the
+// JSON-parse boundary. Test-side: writes a temporary Python script that
+// behaves like close_hyperliquid_position.py but with controllable output.
+
+// These tests exercise parseHyperliquidCloseOutput directly (the pure decision
+// helper extracted from RunHyperliquidClose) so they don't depend on
+// .venv/bin/python3, which isn't installed in the Go CI job.
+
+// Case 1: clean success — exit 0, valid JSON, no error field.
+func TestParseHyperliquidCloseOutput_CleanSuccess(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`)
+	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if result == nil || result.Close == nil || result.Close.Fill == nil {
+		t.Fatalf("expected populated result, got %+v", result)
+	}
+	if result.Close.Fill.TotalSz != 0.5 {
+		t.Errorf("TotalSz = %g, want 0.5", result.Close.Fill.TotalSz)
+	}
+	if result.Close.Fill.Fee != 0.6 {
+		t.Errorf("Fee = %g, want 0.6 — Fee field must be parsed for accounting", result.Close.Fill.Fee)
+	}
+	if result.Close.Fill.OID != 12345 {
+		t.Errorf("OID = %d, want 12345", result.Close.Fill.OID)
+	}
+}
+
+// Case 2: exit 0 with populated error field — should NOT be silently treated
+// as success (the JSON envelope is authoritative).
+func TestParseHyperliquidCloseOutput_Exit0WithError(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"sdk timeout"}`)
+	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
+	if err == nil {
+		t.Fatal("expected non-nil err for exit 0 with error envelope")
+	}
+	if result == nil || result.Error != "sdk timeout" {
+		t.Errorf("expected populated result.Error, got %+v", result)
+	}
+	if !strings.Contains(err.Error(), "sdk timeout") {
+		t.Errorf("err must surface envelope error message, got %v", err)
+	}
+}
+
+// Case 3: exit 1 with valid JSON error — the expected failure path.
+func TestParseHyperliquidCloseOutput_Exit1WithError(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"hl rate limited"}`)
+	runErr := fmt.Errorf("exit status 1")
+	result, _, err := parseHyperliquidCloseOutput(stdout, "", runErr)
+	if err == nil {
+		t.Fatal("expected non-nil err for exit 1 — kill switch must latch")
+	}
+	if result == nil || result.Error != "hl rate limited" {
+		t.Errorf("expected populated result.Error, got %+v", result)
+	}
+	if !strings.Contains(err.Error(), "hl rate limited") {
+		t.Errorf("err must include underlying error, got %v", err)
+	}
+}
+
+// Case 4: exit non-zero with valid JSON but no error field. Tightened
+// contract (item #2 from review): never silently report success on a
+// non-zero exit. Without this test, a regression that drops the exit-code
+// check would let the kill switch clear virtual state on a script crash
+// that happened to print parseable JSON before dying.
+func TestParseHyperliquidCloseOutput_Exit1WithoutErrorField(t *testing.T) {
+	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x"}`)
+	runErr := fmt.Errorf("exit status 1")
+	_, _, err := parseHyperliquidCloseOutput(stdout, "", runErr)
+	if err == nil {
+		t.Fatal("expected non-nil err for exit 1 even without error field")
+	}
+	if !strings.Contains(err.Error(), "no error field") {
+		t.Errorf("err message should mention missing error field, got %v", err)
+	}
+}
+
+// Case 5: malformed JSON. Always a failure regardless of exit code, because
+// the kill switch cannot infer outcome from garbage.
+func TestParseHyperliquidCloseOutput_MalformedJSON(t *testing.T) {
+	result, _, err := parseHyperliquidCloseOutput([]byte("this is not json"), "", nil)
+	if err == nil {
+		t.Fatal("expected non-nil err for malformed JSON")
+	}
+	if result != nil {
+		t.Errorf("result should be nil for unparseable output, got %+v", result)
 	}
 }

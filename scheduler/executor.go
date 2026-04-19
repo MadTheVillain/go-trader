@@ -222,6 +222,87 @@ func RunHyperliquidExecute(script, symbol, side string, size float64) (*Hyperliq
 	return &result, stderrStr, nil
 }
 
+// HyperliquidCloseFill is the parsed fill block from close_hyperliquid_position.py.
+// Mirrors HyperliquidFill; Fee is included so kill-switch close accounting
+// (fee totals, post-mortem PnL) can capture exchange fees just like the
+// normal execute path does.
+type HyperliquidCloseFill struct {
+	AvgPx   float64 `json:"avg_px"`
+	TotalSz float64 `json:"total_sz"`
+	OID     int64   `json:"oid,omitempty"`
+	Fee     float64 `json:"fee,omitempty"`
+}
+
+// HyperliquidClose is the close block from close_hyperliquid_position.py.
+type HyperliquidClose struct {
+	Symbol string                `json:"symbol"`
+	Fill   *HyperliquidCloseFill `json:"fill,omitempty"`
+}
+
+// HyperliquidCloseResult is the top-level JSON from close_hyperliquid_position.py.
+// Used by the portfolio kill switch to liquidate on-chain positions (#341).
+type HyperliquidCloseResult struct {
+	Close     *HyperliquidClose `json:"close"`
+	Platform  string            `json:"platform"`
+	Timestamp string            `json:"timestamp"`
+	Error     string            `json:"error,omitempty"`
+}
+
+// RunHyperliquidClose runs close_hyperliquid_position.py to submit a reduce-only
+// market close for a single coin (#341).
+//
+// Contract (load-bearing for kill-switch correctness): a non-nil error is
+// returned for ANY failure path — non-zero subprocess exit, malformed JSON,
+// or a JSON envelope with `error` populated. Callers that see (result, nil)
+// can treat the close as confirmed by the SDK. The previous contract returned
+// (result, nil) for "exit 1 + parseable JSON with error" which forced every
+// caller to also inspect result.Error and conflated subprocess success with
+// JSON-error success.
+func RunHyperliquidClose(script, symbol string) (*HyperliquidCloseResult, string, error) {
+	args := []string{
+		fmt.Sprintf("--symbol=%s", symbol),
+		"--mode=live",
+	}
+	stdout, stderr, runErr := RunPythonScript(script, args)
+	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
+}
+
+// parseHyperliquidCloseOutput turns the raw subprocess result into
+// (*HyperliquidCloseResult, stderr, error) following the RunHyperliquidClose
+// contract. Extracted from RunHyperliquidClose so the decision logic can be
+// tested without spawning .venv/bin/python3 (absent in the Go CI job).
+func parseHyperliquidCloseOutput(stdout []byte, stderrStr string, runErr error) (*HyperliquidCloseResult, string, error) {
+	var result HyperliquidCloseResult
+	parseErr := json.Unmarshal(stdout, &result)
+
+	switch {
+	case runErr == nil && parseErr == nil && result.Error == "":
+		// Clean success: exit 0, valid JSON, no error field.
+		return &result, stderrStr, nil
+
+	case runErr == nil && parseErr == nil && result.Error != "":
+		// Exit 0 but the script reported an error — should not happen with
+		// the current Python contract (every error path also exits 1) but we
+		// honor the JSON envelope as authoritative.
+		return &result, stderrStr, fmt.Errorf("close reported error despite exit 0: %s", result.Error)
+
+	case parseErr == nil && result.Error != "":
+		// Exit non-zero with valid JSON error envelope — the expected error
+		// path. Surface as a non-nil error so callers don't need to also
+		// check result.Error.
+		return &result, stderrStr, fmt.Errorf("close failed: %s", result.Error)
+
+	case parseErr == nil && runErr != nil:
+		// Exit non-zero with valid JSON but no error field — unexpected. Treat
+		// as failure to avoid silently reporting success on a non-zero exit.
+		return &result, stderrStr, fmt.Errorf("close subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
+
+	default:
+		// Malformed JSON. Always a failure regardless of exit code.
+		return nil, stderrStr, fmt.Errorf("parse close output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
+	}
+}
+
 // ContractSpec holds CME futures contract specifications from check_topstep.py.
 type ContractSpec struct {
 	TickSize   float64 `json:"tick_size"`

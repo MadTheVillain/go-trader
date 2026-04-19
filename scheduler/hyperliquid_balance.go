@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -22,6 +24,31 @@ type HLPosition struct {
 }
 
 var hlMainnetURL = "https://api.hyperliquid.xyz"
+
+// hyperliquidLiveCloseScript is the path to the Python close helper. Exposed as
+// a var so tests can substitute. Path is repo-relative because the scheduler is
+// invoked from the repo root (same convention as other shared_scripts paths).
+var hyperliquidLiveCloseScript = "shared_scripts/close_hyperliquid_position.py"
+
+// HyperliquidLiveCloser submits a reduce-only market close for a single coin
+// and returns the parsed result. Exposed as a function variable so tests can
+// inject a fake without spawning a real Python subprocess. Production
+// implementation is defaultHyperliquidLiveCloser, which shells out to
+// close_hyperliquid_position.py via RunHyperliquidClose.
+type HyperliquidLiveCloser func(symbol string) (*HyperliquidCloseResult, error)
+
+// defaultHyperliquidLiveCloser is the production close implementation. Writes
+// stderr to os.Stderr rather than a per-strategy logger — kill switch is a
+// system-level event, not strategy-scoped. Relies on RunHyperliquidClose's
+// uniform error contract: any non-nil err means the close was not confirmed
+// by the SDK and the kill switch must stay latched.
+func defaultHyperliquidLiveCloser(symbol string) (*HyperliquidCloseResult, error) {
+	result, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, symbol)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[hl-close] %s stderr: %s\n", symbol, stderr)
+	}
+	return result, err
+}
 
 // fetchHyperliquidBalance fetches the live USDC balance (accountValue) from
 // the Hyperliquid clearinghouseState endpoint for a given address.
@@ -440,4 +467,108 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	}
 
 	return changed
+}
+
+// HyperliquidLiveCloseReport summarizes a forceCloseHyperliquidLive run.
+// Each configured live HL coin lands in exactly one of ClosedCoins (SDK
+// accepted the reduce-only close), AlreadyFlat (defensive: szi==0 short-
+// circuited before submit), or Errors (close not confirmed). The producer
+// (forceCloseHyperliquidLive) is the single writer and maintains the
+// partition via mutually-exclusive control flow.
+//
+// Errors is the load-bearing kill-switch correctness signal: only when it's
+// empty does the caller mutate virtual state. Any error keeps the kill
+// switch latched so the next cycle re-fetches on-chain state and retries
+// (#341). Use ConfirmedFlat() rather than `len(Errors) == 0` at call sites
+// so future readers see the predicate spelled out.
+type HyperliquidLiveCloseReport struct {
+	ClosedCoins []string
+	AlreadyFlat []string // unreachable in production (see forceCloseHyperliquidLive); kept as defense-in-depth
+	// Errors is non-nil so coin-keyed writes don't panic; len() works on nil maps too.
+	Errors map[string]error
+}
+
+// ConfirmedFlat reports whether every configured live HL coin reached a
+// terminal closed/flat state without errors. The kill-switch path uses this
+// to gate virtual state mutation.
+func (r HyperliquidLiveCloseReport) ConfirmedFlat() bool {
+	return len(r.Errors) == 0
+}
+
+// SortedErrorCoins returns Errors keys in deterministic order for stable
+// log/Discord output. Map iteration is randomized in Go, so two identical
+// kill-switch fires would otherwise produce different messages — confusing
+// for operator triage.
+func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
+	coins := make([]string, 0, len(r.Errors))
+	for c := range r.Errors {
+		coins = append(coins, c)
+	}
+	sort.Strings(coins)
+	return coins
+}
+
+// forceCloseHyperliquidLive submits reduce-only market closes for every
+// non-zero on-chain HL position belonging to a coin a configured live HL
+// strategy trades on this account. Closes the on-chain quantity directly,
+// regardless of which strategy "owns" it — required because shared coins
+// have per-strategy reconciliation that deliberately does not overwrite
+// virtual quantities (#258), so virtual state can diverge from the on-chain
+// net (#341). HL SDK's market_close passes reduce_only=True (verified at
+// hyperliquid.exchange.Exchange.market_close), so overshooting cannot
+// accidentally flip the position.
+//
+// Pure / no state mutation. Caller is responsible for mutating virtual state
+// only when report.ConfirmedFlat() is true.
+//
+// The Size==0 branch is defense-in-depth: fetchHyperliquidState upstream
+// already filters zero-szi entries out of HLPosition (see hyperliquid_balance.go's
+// szi parser), so this path is unreachable in production. Kept so a future
+// loosening of the upstream filter (e.g. surfacing legacy positions for
+// reconciliation) cannot accidentally submit a zero-size order that the HL
+// API would reject and the kill switch would treat as a fatal error.
+//
+// The ctx argument bounds the OVERALL close loop. Each individual closer call
+// also has its own subprocess timeout (see RunPythonScript). Once ctx expires,
+// remaining unprocessed coins are added to Errors so the kill switch stays
+// latched and retries next cycle. Pass context.Background() to disable the
+// overall bound.
+func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser) HyperliquidLiveCloseReport {
+	report := HyperliquidLiveCloseReport{Errors: make(map[string]error)}
+
+	tradedCoins := make(map[string]bool)
+	for _, sc := range hlLiveAll {
+		sym := hyperliquidSymbol(sc.Args)
+		if sym != "" {
+			tradedCoins[sym] = true
+		}
+	}
+
+	for _, p := range positions {
+		if !tradedCoins[p.Coin] {
+			// Unowned position — kill switch only acts on coins this scheduler
+			// is configured to trade. An on-chain leftover from a different
+			// system (manual trade, another bot) is the operator's problem to
+			// reconcile, not the scheduler's to liquidate.
+			continue
+		}
+		if p.Size == 0 {
+			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
+			continue
+		}
+		// Bail out before submitting if the overall budget expired so we
+		// don't queue another N×30s of subprocess time on top of a deadline
+		// the scheduler has already missed.
+		if err := ctx.Err(); err != nil {
+			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
+			continue
+		}
+		if _, err := closer(p.Coin); err != nil {
+			report.Errors[p.Coin] = err
+			continue
+		}
+		report.ClosedCoins = append(report.ClosedCoins, p.Coin)
+	}
+
+	return report
 }
