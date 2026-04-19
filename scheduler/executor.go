@@ -222,6 +222,54 @@ func RunHyperliquidExecute(script, symbol, side string, size float64) (*Hyperliq
 	return &result, stderrStr, nil
 }
 
+// HyperliquidCloseFill is the parsed fill block from close_hyperliquid_position.py.
+type HyperliquidCloseFill struct {
+	AvgPx   float64 `json:"avg_px"`
+	TotalSz float64 `json:"total_sz"`
+	OID     int64   `json:"oid,omitempty"`
+}
+
+// HyperliquidClose is the close block from close_hyperliquid_position.py.
+type HyperliquidClose struct {
+	Symbol string                `json:"symbol"`
+	Fill   *HyperliquidCloseFill `json:"fill,omitempty"`
+}
+
+// HyperliquidCloseResult is the top-level JSON from close_hyperliquid_position.py.
+// Used by the portfolio kill switch to liquidate on-chain positions (#341).
+type HyperliquidCloseResult struct {
+	Close     *HyperliquidClose `json:"close"`
+	Platform  string            `json:"platform"`
+	Timestamp string            `json:"timestamp"`
+	Error     string            `json:"error,omitempty"`
+}
+
+// RunHyperliquidClose runs close_hyperliquid_position.py to submit a reduce-only
+// market close for a single coin (#341). Returns the parsed result regardless
+// of process exit when JSON is well-formed (script exits 1 on error WITH JSON
+// payload, mirroring the existing check_hyperliquid.py contract).
+func RunHyperliquidClose(script, symbol string) (*HyperliquidCloseResult, string, error) {
+	args := []string{
+		fmt.Sprintf("--symbol=%s", symbol),
+		"--mode=live",
+	}
+	stdout, stderr, err := RunPythonScript(script, args)
+	stderrStr := string(stderr)
+	if err != nil {
+		var result HyperliquidCloseResult
+		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
+			return &result, stderrStr, nil
+		}
+		return nil, stderrStr, fmt.Errorf("close error: %w (stderr: %s)", err, stderrStr)
+	}
+
+	var result HyperliquidCloseResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		return nil, stderrStr, fmt.Errorf("parse close output: %w (stdout: %s)", err, string(stdout))
+	}
+	return &result, stderrStr, nil
+}
+
 // ContractSpec holds CME futures contract specifications from check_topstep.py.
 type ContractSpec struct {
 	TickSize   float64 `json:"tick_size"`

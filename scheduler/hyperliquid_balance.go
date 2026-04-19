@@ -23,6 +23,35 @@ type HLPosition struct {
 
 var hlMainnetURL = "https://api.hyperliquid.xyz"
 
+// hyperliquidLiveCloseScript is the path to the Python close helper. Exposed as
+// a var so tests can substitute. Path is repo-relative because the scheduler is
+// invoked from the repo root (same convention as other shared_scripts paths).
+var hyperliquidLiveCloseScript = "shared_scripts/close_hyperliquid_position.py"
+
+// HyperliquidLiveCloser submits a reduce-only market close for a single coin
+// and returns the parsed result. Exposed as a function variable so tests can
+// inject a fake without spawning a real Python subprocess. Production
+// implementation is defaultHyperliquidLiveCloser, which shells out to
+// close_hyperliquid_position.py via RunHyperliquidClose.
+type HyperliquidLiveCloser func(symbol string) (*HyperliquidCloseResult, error)
+
+// defaultHyperliquidLiveCloser is the production close implementation. Logs
+// stderr to the global stderr (no per-strategy logger here — kill switch is a
+// system-level event, not strategy-scoped).
+func defaultHyperliquidLiveCloser(symbol string) (*HyperliquidCloseResult, error) {
+	result, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, symbol)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[hl-close] %s stderr: %s\n", symbol, stderr)
+	}
+	if err != nil {
+		return result, err
+	}
+	if result != nil && result.Error != "" {
+		return result, fmt.Errorf("hl close %s: %s", symbol, result.Error)
+	}
+	return result, nil
+}
+
 // fetchHyperliquidBalance fetches the live USDC balance (accountValue) from
 // the Hyperliquid clearinghouseState endpoint for a given address.
 // Returns 0 and a non-nil error if the request fails or the response is unexpected.
@@ -440,4 +469,67 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	}
 
 	return changed
+}
+
+// HyperliquidLiveCloseReport summarizes a forceCloseHyperliquidLive run.
+// ClosedCoins lists coins where the SDK accepted a close (or was already flat
+// — net-zero szi is treated as success and never submitted). Errors maps each
+// failing coin to its underlying error so the caller can surface specifics in
+// owner alerts. AlreadyFlat lists net-zero szi coins skipped without an order.
+//
+// The kill-switch caller treats len(Errors) == 0 as "on-chain confirmed flat
+// for all configured live HL coins" and only then mutates virtual state. Any
+// error keeps the kill switch latched so the next cycle retries (#341).
+type HyperliquidLiveCloseReport struct {
+	ClosedCoins []string
+	AlreadyFlat []string
+	Errors      map[string]error
+}
+
+// forceCloseHyperliquidLive submits reduce-only market closes for every
+// non-zero on-chain HL position belonging to a coin a configured live HL
+// strategy trades on this account. Closes the on-chain quantity directly,
+// regardless of which strategy "owns" it — required to handle shared coins
+// where per-strategy reconciliation deliberately leaves virtual state empty
+// (#258, #341). The HL SDK's market_close is reduce-only by construction, so
+// overshooting cannot accidentally flip into the opposite direction.
+//
+// Pure / no state mutation. Caller is responsible for mutating virtual state
+// only when len(report.Errors) == 0.
+//
+// Net-zero szi positions (e.g. equal-and-opposite shared-coin virtual exposure
+// that nets to nothing on-chain) are treated as "already flat" and never
+// submitted — the HL API would reject a zero-size order anyway, and counting
+// them as success lets the kill switch confirm flat without spurious errors.
+func forceCloseHyperliquidLive(positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser) HyperliquidLiveCloseReport {
+	report := HyperliquidLiveCloseReport{Errors: make(map[string]error)}
+
+	tradedCoins := make(map[string]bool)
+	for _, sc := range hlLiveAll {
+		sym := hyperliquidSymbol(sc.Args)
+		if sym != "" {
+			tradedCoins[sym] = true
+		}
+	}
+
+	for _, p := range positions {
+		if !tradedCoins[p.Coin] {
+			// Unowned position — kill switch only acts on coins this scheduler
+			// is configured to trade. An on-chain leftover from a different
+			// system (manual trade, another bot) is the operator's problem to
+			// reconcile, not the scheduler's to liquidate.
+			continue
+		}
+		if p.Size == 0 {
+			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
+			continue
+		}
+		if _, err := closer(p.Coin); err != nil {
+			report.Errors[p.Coin] = err
+			continue
+		}
+		report.ClosedCoins = append(report.ClosedCoins, p.Coin)
+	}
+
+	return report
 }
