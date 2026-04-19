@@ -263,14 +263,14 @@ func FormatCategorySummary(
 	// Summaries scan better with strategies ordered A→Z by ID (#354). Callers often
 	// pass config file order, which is not necessarily alphabetical.
 	strategies := append([]StrategyConfig(nil), channelStrategies...)
-	sort.Slice(strategies, func(i, j int) bool {
+	sort.SliceStable(strategies, func(i, j int) bool {
 		return strategies[i].ID < strategies[j].ID
 	})
 
 	// Icon and title based on strategy types and channel key.
-	isFutures := isFuturesType(channelStrategies) || channelKey == "futures" || channelKey == "ibkr"
+	isFutures := isFuturesType(strategies) || channelKey == "futures" || channelKey == "ibkr"
 	icon := "📊"
-	if isOptionsType(channelStrategies) {
+	if isOptionsType(strategies) {
 		icon = "🎯"
 	} else if channelKey == "spot" {
 		icon = "📈"
@@ -356,7 +356,7 @@ func FormatCategorySummary(
 	// Detect shared wallet groups: strategies on same platform with CapitalPct > 0.
 	walletCapital := make(map[string]float64) // platform -> sum of capitals
 	walletCount := make(map[string]int)       // platform -> count of strategies
-	for _, sc := range channelStrategies {
+	for _, sc := range strategies {
 		if sc.CapitalPct > 0 {
 			walletCapital[sc.Platform] += sc.Capital
 			walletCount[sc.Platform]++
