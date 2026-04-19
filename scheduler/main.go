@@ -65,6 +65,13 @@ func main() {
 	// #87: Resolve capital_pct at startup so initial state gets the right capital.
 	resolveCapitalPct(cfg.Strategies)
 
+	// #343: Reconcile any operator-driven initial_capital changes from config
+	// against the persisted baseline. Without this, the SaveState guard would
+	// silently revert a legitimate "bump initial_capital in config.json" edit
+	// on the next cycle. Captured here, surfaced to the owner DM once the
+	// notifier is wired below.
+	initialCapitalChangeWarnings := ReconcileConfigInitialCapital(cfg, state, stateDB)
+
 	// Initialize new strategies and sync config values for existing ones
 	for i := range cfg.Strategies {
 		sc := &cfg.Strategies[i]
@@ -207,6 +214,21 @@ func main() {
 	// to stderr via the nil-check in state.go.
 	if notifier.HasOwner() {
 		tradePersistWarn = func(msg string) {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+		// #343: Forward baseline-guard warnings (a SaveState caller tried to
+		// rewrite initial_capital) to the owner DM. Dedup is handled inside
+		// SaveState — this only fires once per strategy per process lifetime.
+		initialCapitalGuardWarn = func(msg string) {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #343: Forward startup config-driven baseline changes to the owner. These
+	// are routine when the operator intentionally bumps initial_capital in
+	// config, but worth surfacing so the change is visible in DMs.
+	if len(initialCapitalChangeWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range initialCapitalChangeWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}

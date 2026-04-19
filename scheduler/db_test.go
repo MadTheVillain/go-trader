@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -1496,6 +1497,51 @@ func TestSaveState_AllowsNewStrategies(t *testing.T) {
 	}
 }
 
+// TestSaveState_AllowsBaselineWhenPrevZero confirms the legacy/reset path
+// (#343 review item 7): if a prior row exists with initial_capital = 0
+// (e.g. after ValidateState clamped a malformed value at state.go:144), the
+// next SaveState carrying a real positive baseline must establish it — the
+// guard's `prev > 0` precondition is what makes this work.
+func TestSaveState_AllowsBaselineWhenPrevZero(t *testing.T) {
+	db := openTestDB(t)
+
+	// Seed a strategy row with initial_capital = 0 (mimics the post-ValidateState
+	// reset path).
+	zeroState := &AppState{
+		Strategies: map[string]*StrategyState{
+			"legacy": {
+				ID: "legacy", Type: "spot", Cash: 0, InitialCapital: 0,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(zeroState); err != nil {
+		t.Fatalf("seed SaveState: %v", err)
+	}
+
+	// Now save with a real baseline. Guard must let it through (prev == 0
+	// means "no real baseline yet").
+	bumped := &AppState{
+		Strategies: map[string]*StrategyState{
+			"legacy": {
+				ID: "legacy", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(bumped); err != nil {
+		t.Fatalf("bumped SaveState: %v", err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["legacy"].InitialCapital; got != 1000 {
+		t.Errorf("initial_capital = %g, want 1000 (prev==0 must allow baseline establishment)", got)
+	}
+}
+
 // TestSetInitialCapital_ExplicitOverride is the sanctioned escape hatch —
 // admin/CLI code can permanently change the baseline through this path.
 func TestSetInitialCapital_ExplicitOverride(t *testing.T) {
@@ -1556,5 +1602,69 @@ func TestSetInitialCapital_RejectsInvalid(t *testing.T) {
 	}
 	if err := db.SetInitialCapital("unknown-id", 1000); err == nil {
 		t.Error("expected error for unknown strategy id")
+	}
+}
+
+// TestSaveState_GuardWarnIsOneShot covers the #343 review item 3 follow-up:
+// the baseline-guard warning must fire only once per strategy per process so
+// per-cycle SaveState calls don't spam the operator DM.
+func TestSaveState_GuardWarnIsOneShot(t *testing.T) {
+	db := openTestDB(t)
+
+	// Reset the dedup map so prior tests don't leak.
+	initialCapitalGuardWarned = sync.Map{}
+
+	var warns int
+	prev := initialCapitalGuardWarn
+	initialCapitalGuardWarn = func(string) { warns++ }
+	t.Cleanup(func() { initialCapitalGuardWarn = prev })
+
+	seed := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {
+				ID: "s", Type: "spot", Cash: 100, InitialCapital: 100,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(seed); err != nil {
+		t.Fatalf("seed SaveState: %v", err)
+	}
+
+	bad := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {
+				ID: "s", Type: "spot", Cash: 100, InitialCapital: 200,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	for i := 0; i < 5; i++ {
+		if err := db.SaveState(bad); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+	if warns != 1 {
+		t.Errorf("warn fired %d times, want 1 (one-shot per strategy)", warns)
+	}
+
+	// SetInitialCapital clears the dedup so a subsequent guard violation
+	// against the new baseline fires again.
+	if err := db.SetInitialCapital("s", 200); err != nil {
+		t.Fatalf("SetInitialCapital: %v", err)
+	}
+	stillBad := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {
+				ID: "s", Type: "spot", Cash: 100, InitialCapital: 50,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(stillBad); err != nil {
+		t.Fatalf("stillBad save: %v", err)
+	}
+	if warns != 2 {
+		t.Errorf("warn fired %d times after override, want 2 (dedup must reset)", warns)
 	}
 }

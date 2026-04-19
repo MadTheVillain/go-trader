@@ -7,10 +7,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// initialCapitalGuardWarn is the operator-visible hook for #343 baseline-guard
+// warnings. main.go wires it to the owner DM after MultiNotifier is built so
+// silent overwrites surface beyond stderr. Nil-safe: SaveState falls back to
+// stderr-only when the hook isn't set (early boot, tests).
+var initialCapitalGuardWarn func(msg string)
+
+// initialCapitalGuardWarned dedups baseline-guard warnings to one per strategy
+// per process lifetime. Without this the per-cycle SaveState would re-emit the
+// same warning forever once config drifts from the persisted baseline. Cleared
+// on restart so a still-broken caller is re-flagged after redeploy.
+var initialCapitalGuardWarned sync.Map // map[string]struct{}, key = strategy ID
 
 const schemaDDL = `
 CREATE TABLE IF NOT EXISTS app_state (
@@ -256,8 +269,20 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 // SetInitialCapital is the ONLY sanctioned way to change a strategy's
 // initial_capital baseline (#343). All other write paths go through SaveState,
 // which preserves the existing baseline. Callers are expected to be an
-// explicit user command (CLI flag, admin script, migration), not normal
-// runtime state persistence.
+// explicit user command (CLI flag, admin script, config-drift reconciler at
+// startup), not normal runtime state persistence.
+//
+// Concurrency: runs inside a transaction so a concurrent SaveState observes
+// either the pre- or post-override value, never an interleaved snapshot. With
+// SQLite's single-writer model and SetMaxOpenConns(1), a SaveState already in
+// progress will serialize behind this update.
+//
+// In-memory caveat: this only updates the persisted row. Any AppState already
+// in memory still holds the stale value until reloaded — risk/PnL calculations
+// that fire before the next process restart (or in-place reload of state) will
+// continue to use the pre-override baseline. The startup config-drift path in
+// main.go handles this by mutating in-memory state alongside the DB write;
+// callers invoking this directly mid-run must do the same or accept the gap.
 func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -265,7 +290,12 @@ func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
 	if value <= 0 {
 		return fmt.Errorf("initial_capital must be > 0, got %g", value)
 	}
-	res, err := sdb.db.Exec("UPDATE strategies SET initial_capital = ? WHERE id = ?", value, strategyID)
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec("UPDATE strategies SET initial_capital = ? WHERE id = ?", value, strategyID)
 	if err != nil {
 		return fmt.Errorf("update initial_capital for %s: %w", strategyID, err)
 	}
@@ -276,11 +306,25 @@ func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
 	if n == 0 {
 		return fmt.Errorf("no strategy row for id=%q", strategyID)
 	}
-	fmt.Printf("[state] initial_capital override for %s set to $%.2f (#343)\n", strategyID, value)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	// Allow the guard to fire again for this strategy if a future SaveState
+	// still tries to revert the new baseline — the override is a fresh state
+	// of the world.
+	initialCapitalGuardWarned.Delete(strategyID)
+	fmt.Fprintf(os.Stderr, "[state] initial_capital override for %s set to $%.2f (#343)\n", strategyID, value)
 	return nil
 }
 
 // SaveState writes the full AppState to SQLite within a single transaction.
+//
+// Side effect (#343): when the in-memory StrategyState carries an
+// initial_capital that disagrees with the persisted baseline, SaveState
+// rewrites the in-memory field to match the persisted value. Callers should
+// not rely on the post-save struct holding their original value — the
+// persisted baseline is treated as the source of truth. Use
+// StateDB.SetInitialCapital to change a baseline.
 func (sdb *StateDB) SaveState(state *AppState) error {
 	tx, err := sdb.db.Begin()
 	if err != nil {
@@ -317,12 +361,12 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	for existingRows.Next() {
 		var id string
-		var cap float64
-		if err := existingRows.Scan(&id, &cap); err != nil {
+		var existing float64
+		if err := existingRows.Scan(&id, &existing); err != nil {
 			existingRows.Close()
 			return fmt.Errorf("scan existing initial_capital: %w", err)
 		}
-		existingInitCaps[id] = cap
+		existingInitCaps[id] = existing
 	}
 	existingRows.Close()
 
@@ -366,9 +410,16 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		// position closes. A baseline change requires an explicit override
 		// via StateDB.SetInitialCapital.
 		if prev, ok := existingInitCaps[s.ID]; ok && prev > 0 && s.InitialCapital != prev {
-			fmt.Printf("[WARN] state: blocking initial_capital change for %s ($%.2f → $%.2f); baseline preserved (#343)\n",
-				s.ID, prev, s.InitialCapital)
+			attempted := s.InitialCapital
 			s.InitialCapital = prev
+			if _, alreadyWarned := initialCapitalGuardWarned.LoadOrStore(s.ID, struct{}{}); !alreadyWarned {
+				msg := fmt.Sprintf("blocking initial_capital change for %s ($%.2f → $%.2f); baseline preserved. Use StateDB.SetInitialCapital or set initial_capital in config to change the baseline (#343)",
+					s.ID, prev, attempted)
+				fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
+				if initialCapitalGuardWarn != nil {
+					initialCapitalGuardWarn(msg)
+				}
+			}
 		}
 
 		cbInt := 0
