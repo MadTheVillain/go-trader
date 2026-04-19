@@ -6,14 +6,17 @@ Submits a reduce-only market close for a single coin via the HL SDK's
 `market_close`. Used by the portfolio kill switch in the Go scheduler to
 liquidate on-chain exposure regardless of which strategy "owns" the
 position — including shared coins where per-strategy reconciliation
-deliberately leaves virtual state empty.
+deliberately does not overwrite virtual quantities (#258), so virtual
+state can diverge from the on-chain net.
 
 Usage:
     close_hyperliquid_position.py --symbol=ETH --mode=live
 
 Live mode is required (kill switch is meaningful only against real
-positions). Stdout is a single JSON envelope; exit 1 on error so the Go
-caller can latch the kill switch and retry next cycle.
+positions). Stdout is always a single JSON envelope: `{"close": ..., "platform": ...,
+"timestamp": ..., "error": "..."}`. The Go caller (`RunHyperliquidClose`)
+prefers the JSON `error` field over the exit code, but exit 1 is also set
+on every error path so a malformed-JSON crash still surfaces as failure.
 """
 
 import argparse
@@ -46,52 +49,84 @@ def main():
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         result = adapter.market_close(args.symbol)
-
-        # SDK reduce-only close response shape mirrors market_open:
-        # {"status": "ok", "response": {"type": "order", "data": {"statuses": [...]}}}
-        # When already flat the SDK returns either an empty statuses list or
-        # status="ok" with no fill block — both are treated as success.
-        fill = {}
-        try:
-            statuses = (
-                (result or {}).get("response", {}).get("data", {}).get("statuses", [])
-            )
-            if statuses:
-                filled = statuses[0].get("filled", {})
-                fill = {
-                    "avg_px": float(filled.get("avgPx", 0) or 0),
-                    "total_sz": float(filled.get("totalSz", 0) or 0),
-                }
-                oid = filled.get("oid")
-                if oid is not None:
-                    fill["oid"] = int(oid)
-        except Exception:
-            pass
-
-        # Surface SDK-level error status so the Go caller can latch.
-        if isinstance(result, dict) and result.get("status") not in (None, "ok"):
-            print(json.dumps({
-                "close": {"symbol": args.symbol, "fill": fill},
-                "platform": "hyperliquid",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": f"sdk status={result.get('status')!r}: {result}",
-            }))
-            sys.exit(1)
-
-        print(json.dumps({
-            "close": {"symbol": args.symbol, "fill": fill},
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }))
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({
-            "close": None,
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }))
-        sys.exit(1)
+        _emit_error(args.symbol, str(e))
+        return
+
+    # SDK reduce-only close response shape mirrors market_open:
+    # {"status": "ok", "response": {"type": "order", "data": {"statuses": [...]}}}
+    # The kill switch must NEVER report success unless the order actually
+    # filled on-chain — silently treating a "resting" or per-status "error"
+    # entry as success would clear virtual state while exposure remains
+    # (the original #341 failure mode shifted into the Python layer).
+
+    if not isinstance(result, dict):
+        _emit_error(args.symbol, f"unexpected SDK response type {type(result).__name__}: {result!r}")
+        return
+
+    # Outer status must be "ok" or absent — anything else is an SDK rejection.
+    outer_status = result.get("status")
+    if outer_status not in (None, "ok"):
+        _emit_error(args.symbol, f"sdk status={outer_status!r}: {result}")
+        return
+
+    statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+
+    # Empty statuses == HL had nothing to close (already flat). Treat as success
+    # with empty fill so the kill switch can release the latch when on-chain is
+    # genuinely flat — this complements the szi==0 filter in fetchHyperliquidState
+    # for the eventual-consistency window where on-chain just-flattened between
+    # the Go-side fetch and our submit.
+    if not statuses:
+        _emit_success(args.symbol, fill={})
+        return
+
+    first = statuses[0]
+
+    # Per-status error (e.g. "order has zero size", "no position", rate limit).
+    # Surface so the kill switch latches and retries next cycle.
+    if "error" in first:
+        _emit_error(args.symbol, f"per-status error: {first['error']}")
+        return
+
+    # "resting" means a limit order is sitting on the book — for market_close
+    # this should never happen (market orders fill or fail), but guard anyway.
+    # Not "filled" => not closed => kill switch must NOT release the latch.
+    if "filled" not in first:
+        _emit_error(args.symbol, f"close not filled (status keys={list(first.keys())}): {first}")
+        return
+
+    filled = first["filled"]
+    fill = {
+        "avg_px": float(filled.get("avgPx", 0) or 0),
+        "total_sz": float(filled.get("totalSz", 0) or 0),
+    }
+    oid = filled.get("oid")
+    if oid is not None:
+        fill["oid"] = int(oid)
+    fee = filled.get("fee")
+    if fee is not None:
+        fill["fee"] = float(fee)
+    _emit_success(args.symbol, fill)
+
+
+def _emit_success(symbol, fill):
+    print(json.dumps({
+        "close": {"symbol": symbol, "fill": fill},
+        "platform": "hyperliquid",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }))
+
+
+def _emit_error(symbol, message):
+    print(json.dumps({
+        "close": {"symbol": symbol, "fill": {}},
+        "platform": "hyperliquid",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "error": message,
+    }))
+    sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -1154,7 +1155,7 @@ func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
 // These verify the kill-switch live close helper that was missing pre-#341.
 // The helper closes on-chain positions directly via the HL SDK's market_close
 // (reduce-only by construction), regardless of which strategy "owns" them, so
-// shared coins where reconciliation deliberately leaves virtual state empty
+// shared coins where reconciliation deliberately does not overwrite virtual
 // (#258) are still liquidated when the portfolio kill switch fires.
 
 // fakeCloser builds a HyperliquidLiveCloser test double that records every
@@ -1187,7 +1188,7 @@ func TestForceCloseHyperliquidLive_NonSharedCoin(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(positions, hlLiveAll, closer)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -1216,7 +1217,7 @@ func TestForceCloseHyperliquidLive_SharedCoinEmptyVirtual(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(positions, hlLiveAll, closer)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -1247,7 +1248,7 @@ func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(positions, hlLiveAll, closer)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors for net-zero coin, got %v", report.Errors)
@@ -1268,7 +1269,8 @@ func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 // only needs to detect non-zero szi and submit one close per coin. This test
 // guards the implicit assumption that we don't need separate buy/sell branches
 // here — and that overshooting cannot flip the position because market_close
-// is reduce-only by SDK construction (verified by the adapter's docstring).
+// is reduce-only by SDK construction (reduce_only=True is hard-coded in
+// hyperliquid.exchange.Exchange.market_close inside the SDK).
 func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-bidir-eth-live", Platform: "hyperliquid", Type: "perps",
@@ -1279,7 +1281,7 @@ func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(positions, hlLiveAll, closer)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -1311,7 +1313,7 @@ func TestForceCloseHyperliquidLive_ClosePartialFailure(t *testing.T) {
 	closeErr := fmt.Errorf("hl rate limited")
 	closer, _ := fakeCloser(map[string]error{"BTC": closeErr})
 
-	report := forceCloseHyperliquidLive(positions, hlLiveAll, closer)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
 
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
@@ -1340,7 +1342,7 @@ func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(positions, hlLiveAll, closer)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer)
 
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
@@ -1357,7 +1359,7 @@ func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 // no-op. The caller's onChainConfirmedFlat check then proceeds straight to
 // virtual state mutation, matching pre-#341 behavior for non-HL deployments.
 func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
-	report := forceCloseHyperliquidLive(nil, nil, func(string) (*HyperliquidCloseResult, error) {
+	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string) (*HyperliquidCloseResult, error) {
 		t.Fatalf("closer should not be called with empty inputs")
 		return nil, nil
 	})

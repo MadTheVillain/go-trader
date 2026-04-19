@@ -540,45 +540,35 @@ func main() {
 
 			// #341: Submit reduce-only market closes to Hyperliquid for every
 			// non-zero on-chain position belonging to a configured live HL
-			// strategy. Runs OUTSIDE the lock — close_hyperliquid_position.py
-			// is a subprocess that can take seconds. Closes the on-chain qty
-			// directly, ignoring per-strategy ownership, so shared coins
-			// (where reconciliation deliberately leaves virtual state empty,
-			// see #258) are still liquidated. Net-zero szi is treated as
-			// "already flat" and never submitted.
+			// strategy. The planning step (planKillSwitchClose) runs OUTSIDE
+			// the lock — close_hyperliquid_position.py is a subprocess that
+			// can take seconds. HL-only this PR; OKX/Robinhood/TopStep have
+			// the same underlying bug but route orders through subprocesses
+			// without a native Go on-chain fetcher (tracked separately).
 			//
-			// Latch semantics: kill switch stays active until len(Errors)==0,
-			// at which point virtual state is mutated and the operator-driven
-			// reset DM flow takes over. On any close error, we leave virtual
-			// state untouched so the next cycle re-enters this branch (because
-			// CheckPortfolioRisk early-returns false while latched) and retries.
-			var hlCloseReport HyperliquidLiveCloseReport
-			onChainConfirmedFlat := true
+			// Latch semantics: virtual state is mutated only when
+			// plan.OnChainConfirmedFlat is true. Otherwise the kill switch
+			// stays latched and the next cycle re-enters this branch
+			// (CheckPortfolioRisk early-returns false while KillSwitchActive
+			// is true) and retries.
+			var plan KillSwitchClosePlan
 			if killSwitchFired {
-				if hlStateFetched && len(hlLiveAll) > 0 {
-					hlCloseReport = forceCloseHyperliquidLive(hlPositions, hlLiveAll, defaultHyperliquidLiveCloser)
-					if len(hlCloseReport.Errors) > 0 {
-						onChainConfirmedFlat = false
-					}
-					if len(hlCloseReport.ClosedCoins) > 0 {
-						fmt.Printf("[CRITICAL] hl-close: submitted reduce-only closes for %v\n", hlCloseReport.ClosedCoins)
-					}
-					if len(hlCloseReport.AlreadyFlat) > 0 {
-						fmt.Printf("[INFO] hl-close: already flat on-chain: %v\n", hlCloseReport.AlreadyFlat)
-					}
-					for coin, err := range hlCloseReport.Errors {
-						fmt.Printf("[CRITICAL] hl-close: %s failed: %v (kill switch will retry next cycle)\n", coin, err)
-					}
-				} else if !hlStateFetched && len(hlLiveAll) > 0 {
-					// We have live HL strategies configured but couldn't fetch
-					// on-chain state this cycle. Cannot confirm flat — keep
-					// virtual state intact and retry next cycle.
-					onChainConfirmedFlat = false
-					fmt.Printf("[CRITICAL] hl-close: clearinghouseState unavailable; cannot confirm on-chain flat — kill switch will retry next cycle\n")
+				plan = planKillSwitchClose(
+					hlAddr,
+					hlStateFetched,
+					hlPositions,
+					hlLiveAll,
+					portfolioReason,
+					90*time.Second,
+					defaultHyperliquidLiveCloser,
+					defaultHLStateFetcher,
+				)
+				for _, line := range plan.LogLines {
+					fmt.Println(line)
 				}
 			}
 
-			if killSwitchFired && onChainConfirmedFlat {
+			if killSwitchFired && plan.OnChainConfirmedFlat {
 				mu.Lock()
 				for _, sc := range cfg.Strategies {
 					if s, ok := state.Strategies[sc.ID]; ok {
@@ -588,28 +578,8 @@ func main() {
 				mu.Unlock()
 			}
 
-			if killSwitchFired && notifier.HasBackends() {
-				var msg string
-				if onChainConfirmedFlat {
-					summary := "no live HL exposure"
-					if len(hlCloseReport.ClosedCoins) > 0 {
-						summary = fmt.Sprintf("HL closes: %v", hlCloseReport.ClosedCoins)
-					}
-					msg = fmt.Sprintf("**PORTFOLIO KILL SWITCH**\n%s\n%s. Virtual state cleared. Manual reset required.", portfolioReason, summary)
-				} else {
-					var errSummary string
-					if len(hlCloseReport.Errors) > 0 {
-						parts := make([]string, 0, len(hlCloseReport.Errors))
-						for coin, err := range hlCloseReport.Errors {
-							parts = append(parts, fmt.Sprintf("%s: %v", coin, err))
-						}
-						errSummary = "Live close errors — " + strings.Join(parts, "; ")
-					} else {
-						errSummary = "Could not fetch HL on-chain state to confirm flat"
-					}
-					msg = fmt.Sprintf("**PORTFOLIO KILL SWITCH (LATCHED, RETRYING)**\n%s\n%s. Virtual state preserved. Next cycle will retry.", portfolioReason, errSummary)
-				}
-				notifier.SendToAllChannels(msg)
+			if killSwitchFired && notifier.HasBackends() && plan.DiscordMessage != "" {
+				notifier.SendToAllChannels(plan.DiscordMessage)
 			}
 
 			// Warning alert: drawdown approaching kill switch threshold.
