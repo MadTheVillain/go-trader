@@ -7,10 +7,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// initialCapitalGuardWarn is the operator-visible hook for #343 baseline-guard
+// warnings. main.go wires it to the owner DM after MultiNotifier is built so
+// silent overwrites surface beyond stderr. Nil-safe: SaveState falls back to
+// stderr-only when the hook isn't set (early boot, tests).
+var initialCapitalGuardWarn func(msg string)
+
+// initialCapitalGuardWarned dedups baseline-guard warnings to one per strategy
+// per process lifetime. Without this the per-cycle SaveState would re-emit the
+// same warning forever once config drifts from the persisted baseline. Cleared
+// on restart so a still-broken caller is re-flagged after redeploy.
+var initialCapitalGuardWarned sync.Map // map[string]struct{}, key = strategy ID
 
 const schemaDDL = `
 CREATE TABLE IF NOT EXISTS app_state (
@@ -253,7 +266,65 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	return nil
 }
 
+// SetInitialCapital is the ONLY sanctioned way to change a strategy's
+// initial_capital baseline (#343). All other write paths go through SaveState,
+// which preserves the existing baseline. Callers are expected to be an
+// explicit user command (CLI flag, admin script, config-drift reconciler at
+// startup), not normal runtime state persistence.
+//
+// Concurrency: runs inside a transaction so a concurrent SaveState observes
+// either the pre- or post-override value, never an interleaved snapshot. With
+// SQLite's single-writer model and SetMaxOpenConns(1), a SaveState already in
+// progress will serialize behind this update.
+//
+// In-memory caveat: this only updates the persisted row. Any AppState already
+// in memory still holds the stale value until reloaded — risk/PnL calculations
+// that fire before the next process restart (or in-place reload of state) will
+// continue to use the pre-override baseline. The startup config-drift path in
+// main.go handles this by mutating in-memory state alongside the DB write;
+// callers invoking this directly mid-run must do the same or accept the gap.
+func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	if value <= 0 {
+		return fmt.Errorf("initial_capital must be > 0, got %g", value)
+	}
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec("UPDATE strategies SET initial_capital = ? WHERE id = ?", value, strategyID)
+	if err != nil {
+		return fmt.Errorf("update initial_capital for %s: %w", strategyID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("no strategy row for id=%q", strategyID)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	// Allow the guard to fire again for this strategy if a future SaveState
+	// still tries to revert the new baseline — the override is a fresh state
+	// of the world.
+	initialCapitalGuardWarned.Delete(strategyID)
+	fmt.Fprintf(os.Stderr, "[state] initial_capital override for %s set to $%.2f (#343)\n", strategyID, value)
+	return nil
+}
+
 // SaveState writes the full AppState to SQLite within a single transaction.
+//
+// Side effect (#343): when the in-memory StrategyState carries an
+// initial_capital that disagrees with the persisted baseline, SaveState
+// rewrites the in-memory field to match the persisted value. Callers should
+// not rely on the post-save struct holding their original value — the
+// persisted baseline is treated as the source of truth. Use
+// StateDB.SetInitialCapital to change a baseline.
 func (sdb *StateDB) SaveState(state *AppState) error {
 	tx, err := sdb.db.Begin()
 	if err != nil {
@@ -280,12 +351,39 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("upsert app_state: %w", err)
 	}
 
-	// 2. Delete all strategies (CASCADE deletes positions + option_positions).
+	// 2. Snapshot existing initial_capital per strategy so the save path can
+	// never silently rewrite a PnL baseline (#343). Captured before DELETE so
+	// the CASCADE doesn't erase the prior values first.
+	existingInitCaps := make(map[string]float64)
+	existingRows, err := tx.Query("SELECT id, initial_capital FROM strategies")
+	if err != nil {
+		return fmt.Errorf("read existing initial_capital: %w", err)
+	}
+	for existingRows.Next() {
+		var id string
+		var existing float64
+		if err := existingRows.Scan(&id, &existing); err != nil {
+			existingRows.Close()
+			return fmt.Errorf("scan existing initial_capital: %w", err)
+		}
+		existingInitCaps[id] = existing
+	}
+	// rows.Next() returns false on both exhaustion and mid-iteration error;
+	// without this Err() check a transient SQLite failure would yield a
+	// silently-incomplete snapshot and leave un-snapshotted strategies
+	// unprotected by the baseline guard for this save cycle.
+	if err := existingRows.Err(); err != nil {
+		existingRows.Close()
+		return fmt.Errorf("iterate existing initial_capital: %w", err)
+	}
+	existingRows.Close()
+
+	// 3. Delete all strategies (CASCADE deletes positions + option_positions).
 	if _, err := tx.Exec("DELETE FROM strategies"); err != nil {
 		return fmt.Errorf("delete strategies: %w", err)
 	}
 
-	// 3. Insert strategies with flattened risk state.
+	// 4. Insert strategies with flattened risk state.
 	stmtStrat, err := tx.Prepare(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
@@ -314,6 +412,24 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	defer stmtOpt.Close()
 
 	for _, s := range state.Strategies {
+		// Immutable baseline guard (#343): if a prior initial_capital exists
+		// and the incoming value disagrees, keep the prior value so PnL
+		// history stays comparable across restarts, state restores, and
+		// position closes. A baseline change requires an explicit override
+		// via StateDB.SetInitialCapital.
+		if prev, ok := existingInitCaps[s.ID]; ok && prev > 0 && s.InitialCapital != prev {
+			attempted := s.InitialCapital
+			s.InitialCapital = prev
+			if _, alreadyWarned := initialCapitalGuardWarned.LoadOrStore(s.ID, struct{}{}); !alreadyWarned {
+				msg := fmt.Sprintf("blocking initial_capital change for %s ($%.2f → $%.2f); baseline preserved. Use StateDB.SetInitialCapital or set initial_capital in config to change the baseline (#343)",
+					s.ID, prev, attempted)
+				fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
+				if initialCapitalGuardWarn != nil {
+					initialCapitalGuardWarn(msg)
+				}
+			}
+		}
+
 		cbInt := 0
 		if s.RiskState.CircuitBreaker {
 			cbInt = 1
@@ -346,7 +462,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 4. Append-only trades: insert any TradeHistory rows that have not yet been
+	// 5. Append-only trades: insert any TradeHistory rows that have not yet been
 	//    persisted (t.persisted == false). LoadState and successful RecordTrade
 	//    both flip the flag to true, so SaveState only flushes the backlog —
 	//    including any rows whose eager InsertTrade earlier in the cycle
@@ -445,7 +561,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 5. Upsert portfolio_risk singleton.
+	// 6. Upsert portfolio_risk singleton.
 	ksActive := 0
 	if state.PortfolioRisk.KillSwitchActive {
 		ksActive = 1
@@ -462,7 +578,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("upsert portfolio_risk: %w", err)
 	}
 
-	// 6. Kill switch events: replace all (capped at maxKillSwitchEvents).
+	// 7. Kill switch events: replace all (capped at maxKillSwitchEvents).
 	if _, err := tx.Exec("DELETE FROM kill_switch_events"); err != nil {
 		return fmt.Errorf("delete kill_switch_events: %w", err)
 	}
@@ -480,7 +596,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 7. Upsert correlation_snapshot singleton as JSON.
+	// 8. Upsert correlation_snapshot singleton as JSON.
 	snapJSON := "{}"
 	if state.CorrelationSnapshot != nil {
 		data, err := json.Marshal(state.CorrelationSnapshot)

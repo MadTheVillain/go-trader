@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,7 +19,18 @@ func openTestDB(t *testing.T) *StateDB {
 		t.Fatalf("OpenStateDB: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+	resetInitialCapitalGuardDedup(t)
 	return db
+}
+
+// resetInitialCapitalGuardDedup wipes the package-level dedup map so a test
+// that asserts on warn counts (or simply triggers the guard repeatedly) is
+// not influenced by prior tests in the same package run. Registers a Cleanup
+// so the next test also starts from a clean slate even if this one panics.
+func resetInitialCapitalGuardDedup(t *testing.T) {
+	t.Helper()
+	initialCapitalGuardWarned = sync.Map{}
+	t.Cleanup(func() { initialCapitalGuardWarned = sync.Map{} })
 }
 
 func TestOpenStateDB(t *testing.T) {
@@ -1353,5 +1365,316 @@ func TestSaveLoadState_LeaderboardSummaries(t *testing.T) {
 		if !got.Equal(want) {
 			t.Errorf("key %q: got %v, want %v", k, got, want)
 		}
+	}
+}
+
+// TestSaveState_PreservesInitialCapital verifies the #343 guard: once an
+// initial_capital baseline has been persisted, subsequent SaveState calls can
+// never silently overwrite it, even if the in-memory StrategyState has a
+// different value. Normal state persistence (cycle saves, position closes,
+// restarts) must leave the baseline untouched.
+func TestSaveState_PreservesInitialCapital(t *testing.T) {
+	db := openTestDB(t)
+
+	initial := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-tema-eth": {
+				ID:              "hl-tema-eth",
+				Type:            "perps",
+				Platform:        "hyperliquid",
+				Cash:            505,
+				InitialCapital:  505,
+				Positions:       map[string]*Position{},
+				OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(initial); err != nil {
+		t.Fatalf("first SaveState: %v", err)
+	}
+
+	// Simulate the incident: something (operator agent, buggy code path) tries
+	// to rewrite initial_capital alongside a normal state save.
+	mutated := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-tema-eth": {
+				ID:              "hl-tema-eth",
+				Type:            "perps",
+				Platform:        "hyperliquid",
+				Cash:            632,
+				InitialCapital:  632,
+				Positions:       map[string]*Position{},
+				OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(mutated); err != nil {
+		t.Fatalf("second SaveState: %v", err)
+	}
+
+	// Guard should preserve the baseline and mutate the in-memory state so
+	// subsequent reads stay consistent with the DB.
+	if got := mutated.Strategies["hl-tema-eth"].InitialCapital; got != 505 {
+		t.Errorf("in-memory InitialCapital = %g, want 505 (guard should have restored it)", got)
+	}
+
+	// Cash is a normal runtime field — guard must not touch it.
+	if got := mutated.Strategies["hl-tema-eth"].Cash; got != 632 {
+		t.Errorf("Cash = %g, want 632 (guard must only protect initial_capital)", got)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["hl-tema-eth"].InitialCapital; got != 505 {
+		t.Errorf("persisted initial_capital = %g, want 505", got)
+	}
+	if got := loaded.Strategies["hl-tema-eth"].Cash; got != 632 {
+		t.Errorf("persisted cash = %g, want 632", got)
+	}
+}
+
+// TestSaveState_AllowsFirstInitialCapitalWrite confirms the guard only protects
+// an *existing* baseline — the very first save (DB empty, or prior row had 0)
+// must establish the baseline normally.
+func TestSaveState_AllowsFirstInitialCapitalWrite(t *testing.T) {
+	db := openTestDB(t)
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"new-strat": {
+				ID: "new-strat", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["new-strat"].InitialCapital; got != 1000 {
+		t.Errorf("initial_capital = %g, want 1000 (first write must land)", got)
+	}
+}
+
+// TestSaveState_AllowsNewStrategies confirms the guard does not block strategy
+// rows that don't yet exist in the DB (new strategies added to config between
+// restarts).
+func TestSaveState_AllowsNewStrategies(t *testing.T) {
+	db := openTestDB(t)
+
+	first := &AppState{
+		Strategies: map[string]*StrategyState{
+			"old": {
+				ID: "old", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(first); err != nil {
+		t.Fatalf("first SaveState: %v", err)
+	}
+
+	second := &AppState{
+		Strategies: map[string]*StrategyState{
+			"old": {
+				ID: "old", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+			"brand-new": {
+				ID: "brand-new", Type: "spot", Cash: 2000, InitialCapital: 2000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(second); err != nil {
+		t.Fatalf("second SaveState: %v", err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["brand-new"].InitialCapital; got != 2000 {
+		t.Errorf("new strategy initial_capital = %g, want 2000", got)
+	}
+	if got := loaded.Strategies["old"].InitialCapital; got != 1000 {
+		t.Errorf("old strategy initial_capital = %g, want 1000", got)
+	}
+}
+
+// TestSaveState_AllowsBaselineWhenPrevZero confirms the legacy/reset path
+// (#343 review item 7): if a prior row exists with initial_capital = 0
+// (e.g. after ValidateState clamped a malformed value at state.go:144), the
+// next SaveState carrying a real positive baseline must establish it — the
+// guard's `prev > 0` precondition is what makes this work.
+func TestSaveState_AllowsBaselineWhenPrevZero(t *testing.T) {
+	db := openTestDB(t)
+
+	// Seed a strategy row with initial_capital = 0 (mimics the post-ValidateState
+	// reset path).
+	zeroState := &AppState{
+		Strategies: map[string]*StrategyState{
+			"legacy": {
+				ID: "legacy", Type: "spot", Cash: 0, InitialCapital: 0,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(zeroState); err != nil {
+		t.Fatalf("seed SaveState: %v", err)
+	}
+
+	// Now save with a real baseline. Guard must let it through (prev == 0
+	// means "no real baseline yet").
+	bumped := &AppState{
+		Strategies: map[string]*StrategyState{
+			"legacy": {
+				ID: "legacy", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(bumped); err != nil {
+		t.Fatalf("bumped SaveState: %v", err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["legacy"].InitialCapital; got != 1000 {
+		t.Errorf("initial_capital = %g, want 1000 (prev==0 must allow baseline establishment)", got)
+	}
+}
+
+// TestSetInitialCapital_ExplicitOverride is the sanctioned escape hatch —
+// admin/CLI code can permanently change the baseline through this path.
+func TestSetInitialCapital_ExplicitOverride(t *testing.T) {
+	db := openTestDB(t)
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {
+				ID: "s", Type: "spot", Cash: 505, InitialCapital: 505,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	if err := db.SetInitialCapital("s", 750); err != nil {
+		t.Fatalf("SetInitialCapital: %v", err)
+	}
+
+	// A subsequent SaveState must carry the new baseline forward, not revert
+	// to the in-memory (stale) value.
+	state.Strategies["s"].InitialCapital = 505 // stale in-memory value
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState after override: %v", err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["s"].InitialCapital; got != 750 {
+		t.Errorf("initial_capital = %g, want 750 (override must stick)", got)
+	}
+}
+
+func TestSetInitialCapital_RejectsInvalid(t *testing.T) {
+	db := openTestDB(t)
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {
+				ID: "s", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	if err := db.SetInitialCapital("s", 0); err == nil {
+		t.Error("expected error for zero initial_capital")
+	}
+	if err := db.SetInitialCapital("s", -100); err == nil {
+		t.Error("expected error for negative initial_capital")
+	}
+	if err := db.SetInitialCapital("unknown-id", 1000); err == nil {
+		t.Error("expected error for unknown strategy id")
+	}
+}
+
+// TestSaveState_GuardWarnIsOneShot covers the #343 review item 3 follow-up:
+// the baseline-guard warning must fire only once per strategy per process so
+// per-cycle SaveState calls don't spam the operator DM.
+func TestSaveState_GuardWarnIsOneShot(t *testing.T) {
+	db := openTestDB(t)
+	// Dedup map is reset by openTestDB → resetInitialCapitalGuardDedup so
+	// prior tests don't leak warn counts into this assertion.
+
+	var warns int
+	prev := initialCapitalGuardWarn
+	initialCapitalGuardWarn = func(string) { warns++ }
+	t.Cleanup(func() { initialCapitalGuardWarn = prev })
+
+	seed := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {
+				ID: "s", Type: "spot", Cash: 100, InitialCapital: 100,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(seed); err != nil {
+		t.Fatalf("seed SaveState: %v", err)
+	}
+
+	bad := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {
+				ID: "s", Type: "spot", Cash: 100, InitialCapital: 200,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	for i := 0; i < 5; i++ {
+		if err := db.SaveState(bad); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+	if warns != 1 {
+		t.Errorf("warn fired %d times, want 1 (one-shot per strategy)", warns)
+	}
+
+	// SetInitialCapital clears the dedup so a subsequent guard violation
+	// against the new baseline fires again.
+	if err := db.SetInitialCapital("s", 200); err != nil {
+		t.Fatalf("SetInitialCapital: %v", err)
+	}
+	stillBad := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {
+				ID: "s", Type: "spot", Cash: 100, InitialCapital: 50,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(stillBad); err != nil {
+		t.Fatalf("stillBad save: %v", err)
+	}
+	if warns != 2 {
+		t.Errorf("warn fired %d times after override, want 2 (dedup must reset)", warns)
 	}
 }

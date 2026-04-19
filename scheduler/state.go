@@ -214,6 +214,57 @@ func ValidatePerpsAllowShortsConfig(state *AppState, cfg *Config) []string {
 	return warnings
 }
 
+// ReconcileConfigInitialCapital bridges the #343 baseline guard with operator
+// intent expressed via config. The SaveState guard treats initial_capital as
+// immutable, so a legitimate change ("bump $505 → $1000") would otherwise be
+// silently reverted on every cycle. This function runs once at startup:
+//
+//   - For each strategy where config explicitly sets initial_capital
+//     (sc.InitialCapital > 0) and the persisted state baseline disagrees,
+//     treat the config field as the explicit override signal.
+//   - Persist the new baseline via the sanctioned StateDB.SetInitialCapital
+//     path so the guard's snapshot picks it up next cycle.
+//   - Mutate the in-memory StrategyState so any startup-time PnL/risk
+//     calculation in the same process sees the new value immediately.
+//   - Return separate info messages (successful applies) and error messages
+//     (persist failures) so main.go can DM the owner with a clear distinction
+//     — a baseline change is rare and worth surfacing either way, but the
+//     caller should be able to tell success from failure without parsing the
+//     string.
+//
+// Strategies that omit initial_capital from config are ignored: Capital is a
+// runtime field that drifts with PnL and capital_pct rebases, so it is not a
+// reliable signal of "operator wants to change the baseline." The explicit
+// path is `initial_capital` in config or a direct SetInitialCapital call.
+func ReconcileConfigInitialCapital(cfg *Config, state *AppState, sdb *StateDB) (infos []string, errors []string) {
+	if state == nil || sdb == nil {
+		return nil, nil
+	}
+	for _, sc := range cfg.Strategies {
+		if sc.InitialCapital <= 0 {
+			continue
+		}
+		s, ok := state.Strategies[sc.ID]
+		if !ok || s.InitialCapital <= 0 || s.InitialCapital == sc.InitialCapital {
+			continue
+		}
+		prev := s.InitialCapital
+		if err := sdb.SetInitialCapital(sc.ID, sc.InitialCapital); err != nil {
+			msg := fmt.Sprintf("config-driven initial_capital change for %s ($%.2f → $%.2f) failed to persist: %v — DB still holds $%.2f",
+				sc.ID, prev, sc.InitialCapital, err, prev)
+			fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
+			errors = append(errors, msg)
+			continue
+		}
+		s.InitialCapital = sc.InitialCapital
+		msg := fmt.Sprintf("config-driven initial_capital change applied for %s: $%.2f → $%.2f (#343)",
+			sc.ID, prev, sc.InitialCapital)
+		fmt.Fprintf(os.Stderr, "[state] %s\n", msg)
+		infos = append(infos, msg)
+	}
+	return infos, errors
+}
+
 // LoadStateWithDB loads state from SQLite. Returns a fresh AppState when the DB is empty.
 func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 	state, err := sdb.LoadState()

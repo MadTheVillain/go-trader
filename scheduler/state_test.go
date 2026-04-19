@@ -345,3 +345,96 @@ func TestNewStrategyState_NoConfigInitialCapital(t *testing.T) {
 		t.Errorf("InitialCapital = %g, want 600 (from Capital fallback)", s.InitialCapital)
 	}
 }
+
+// TestReconcileConfigInitialCapital covers the #343 startup bridge between
+// operator-driven config bumps and the SaveState baseline guard.
+func TestReconcileConfigInitialCapital(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenStateDB(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	resetInitialCapitalGuardDedup(t)
+
+	// Seed DB with a $505 baseline.
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-tema-eth": {
+				ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid",
+				Cash: 505, InitialCapital: 505,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+			"silent": {
+				ID: "silent", Type: "spot", Cash: 200, InitialCapital: 200,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config bumps the explicit field for one strategy, leaves the other alone.
+	cfg := &Config{
+		Strategies: []StrategyConfig{
+			{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 1000, InitialCapital: 1000},
+			{ID: "silent", Type: "spot", Capital: 200}, // no InitialCapital → no reconciliation
+		},
+	}
+
+	infos, errs := ReconcileConfigInitialCapital(cfg, state, db)
+	if len(infos) != 1 {
+		t.Fatalf("infos = %d, want 1 (only hl-tema-eth changed)", len(infos))
+	}
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+
+	// In-memory mutation must happen so same-process risk calcs see the new value.
+	if got := state.Strategies["hl-tema-eth"].InitialCapital; got != 1000 {
+		t.Errorf("in-memory InitialCapital = %g, want 1000", got)
+	}
+	if got := state.Strategies["silent"].InitialCapital; got != 200 {
+		t.Errorf("untouched strategy InitialCapital = %g, want 200", got)
+	}
+
+	// Persist must stick across a SaveState (the baseline guard would have
+	// reverted it if SetInitialCapital didn't run).
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState after reconcile: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Strategies["hl-tema-eth"].InitialCapital; got != 1000 {
+		t.Errorf("persisted InitialCapital = %g, want 1000", got)
+	}
+}
+
+func TestReconcileConfigInitialCapital_NoOpWhenAligned(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenStateDB(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	resetInitialCapitalGuardDedup(t)
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"s": {ID: "s", Type: "spot", Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Strategies: []StrategyConfig{
+		{ID: "s", Type: "spot", Capital: 1000, InitialCapital: 1000},
+	}}
+	if infos, errs := ReconcileConfigInitialCapital(cfg, state, db); len(infos) != 0 || len(errs) != 0 {
+		t.Errorf("infos=%v errs=%v, want none when config matches DB", infos, errs)
+	}
+}
