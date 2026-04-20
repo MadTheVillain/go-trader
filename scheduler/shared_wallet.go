@@ -23,38 +23,101 @@ type SharedWalletKey struct {
 // single platform can host multiple distinct wallets if that ever comes up.
 type WalletBalanceFetcher func(SharedWalletKey) (float64, error)
 
-// walletKeyFor returns the shared-wallet key for a strategy if it trades from
-// a shared on-exchange account, otherwise (zero, false).
+// walletKeyRegistry enumerates the (platform, instrument) pairs we recognize
+// as single-on-exchange-account trading. Each entry supplies the live-mode
+// predicate and the env-var that identifies the account. Adding a new live
+// platform = append one entry; no other code in this file changes.
 //
-// Currently only Hyperliquid live perps strategies are recognized: they all
-// trade from the address in HYPERLIQUID_ACCOUNT_ADDRESS, so any two such
-// strategies share the wallet by definition.
+// NOTE: recognition via walletKeyFor does NOT imply that a live balance can be
+// fetched — that's a separate capability tracked by hasSharedWalletBalanceFetcher.
+// detectSharedWallets filters by fetcher availability so expanding this
+// registry does not regress portfolio-value math for platforms whose balance
+// fetcher is not yet implemented (phase 1a of #357).
+var walletKeyRegistry = []struct {
+	platform   string
+	instrument string // sc.Type value ("perps", "futures", "spot")
+	liveFn     func([]string) bool
+	envVar     string
+}{
+	// Hyperliquid perps live — original entry, trades from HYPERLIQUID_ACCOUNT_ADDRESS.
+	{platform: "hyperliquid", instrument: "perps", liveFn: hyperliquidIsLive, envVar: "HYPERLIQUID_ACCOUNT_ADDRESS"},
+	// OKX perps (swap) live — multi-strategy on one API key share the same
+	// margin account; OKX_API_KEY uniquely identifies the account (#357 phase 1a).
+	{platform: "okx", instrument: "perps", liveFn: okxIsLive, envVar: "OKX_API_KEY"},
+	// TopStep futures live — TOPSTEP_ACCOUNT_ID is the natural account key
+	// (#357 phase 1a).
+	{platform: "topstep", instrument: "futures", liveFn: topstepIsLive, envVar: "TOPSTEP_ACCOUNT_ID"},
+	// Robinhood crypto spot live — multi-strategy on one username share the
+	// same spot asset balance; ROBINHOOD_USERNAME identifies the account
+	// (#357 phase 1a).
+	{platform: "robinhood", instrument: "spot", liveFn: robinhoodIsLive, envVar: "ROBINHOOD_USERNAME"},
+}
+
+// walletKeyFor returns the on-exchange account key for a strategy if it trades
+// from an identifiable live wallet, otherwise (zero, false).
 //
-// TODO(#243-extension): extend to other live perps/futures platforms once they
-// grow multi-strategy setups on a single account (candidates: okx live swap,
-// topstep live, robinhood live). Each needs its own env-var / account-id source
-// and live-mode predicate. Consider a small registry keyed on
-// (platform, type, live-mode flag) to keep this centralized.
+// Recognition is driven by walletKeyRegistry (above). The returned key is
+// suitable for:
+//   - grouping multiple strategies on the same account for per-strategy
+//     circuit-breaker close sizing (#357)
+//   - shared-wallet double-count protection in portfolio value (#243) — but
+//     only when a balance fetcher is registered, see hasSharedWalletBalanceFetcher
+//
+// Paper-mode strategies and strategies missing their account env var return
+// (zero, false) by design.
 func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
-	if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
-		addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
-		if addr == "" {
+	for _, entry := range walletKeyRegistry {
+		if sc.Platform != entry.platform || sc.Type != entry.instrument {
+			continue
+		}
+		if !entry.liveFn(sc.Args) {
+			continue
+		}
+		account := os.Getenv(entry.envVar)
+		if account == "" {
 			return SharedWalletKey{}, false
 		}
-		return SharedWalletKey{Platform: "hyperliquid", Account: addr}, true
+		return SharedWalletKey{Platform: entry.platform, Account: account}, true
 	}
 	return SharedWalletKey{}, false
+}
+
+// hasSharedWalletBalanceFetcher reports whether defaultSharedWalletFetcher can
+// return a live balance for the given platform. Platforms recognized by
+// walletKeyFor but without a fetcher are EXCLUDED from detectSharedWallets so
+// multi-strategy setups on those platforms don't cause computeTotalPortfolioValue
+// to freeze the portfolio peak on every cycle via the max-of-members fallback
+// (#357 phase 1a preserves HL-only portfolio-value behavior).
+//
+// As phase 2-4 land real balance fetchers for OKX / TopStep / Robinhood, add
+// their platform strings here to enable double-count protection for them.
+func hasSharedWalletBalanceFetcher(platform string) bool {
+	switch platform {
+	case "hyperliquid":
+		return true
+	}
+	return false
 }
 
 // detectSharedWallets returns the set of shared-wallet keys that have more
 // than one strategy attached, mapped to the list of strategy IDs that share
 // the wallet. Wallets with only a single strategy are NOT included — for
 // those the existing per-strategy sum is already correct.
+//
+// Wallets on platforms without a registered balance fetcher (see
+// hasSharedWalletBalanceFetcher) are also excluded: without a real-balance
+// fetch, computeTotalPortfolioValue would fall back to max(member PV) every
+// cycle and freeze the peak (#357 phase 1a preserves HL-only behavior).
+// As phase 2-4 land balance fetchers for OKX / TS / RH, those platforms
+// become eligible for double-count protection automatically.
 func detectSharedWallets(strategies []StrategyConfig) map[SharedWalletKey][]string {
 	walletStrategies := make(map[SharedWalletKey][]string)
 	for _, sc := range strategies {
 		key, ok := walletKeyFor(sc)
 		if !ok {
+			continue
+		}
+		if !hasSharedWalletBalanceFetcher(key.Platform) {
 			continue
 		}
 		walletStrategies[key] = append(walletStrategies[key], sc.ID)
