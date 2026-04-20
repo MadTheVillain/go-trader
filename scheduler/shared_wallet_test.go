@@ -73,6 +73,279 @@ func TestDetectSharedWallets_SingleStrategyNotShared(t *testing.T) {
 	}
 }
 
+// TestWalletKeyFor_OKX_PerpsLive verifies OKX perps live recognition via
+// OKX_API_KEY (#357 phase 1a). The API key uniquely identifies the account.
+func TestWalletKeyFor_OKX_PerpsLive(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-key-abc")
+
+	sc := StrategyConfig{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
+		Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+
+	key, ok := walletKeyFor(sc)
+	if !ok {
+		t.Fatalf("expected OKX perps live to produce a wallet key")
+	}
+	if key.Platform != "okx" || key.Account != "okx-key-abc" {
+		t.Errorf("unexpected key %+v", key)
+	}
+}
+
+// TestWalletKeyFor_OKX_PaperNoKey verifies paper-mode OKX returns no key.
+func TestWalletKeyFor_OKX_PaperNoKey(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-key-abc")
+
+	sc := StrategyConfig{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
+		Args: []string{"sma", "BTC", "1h", "--mode=paper"}}
+
+	if _, ok := walletKeyFor(sc); ok {
+		t.Errorf("expected no wallet key for paper-mode OKX")
+	}
+}
+
+// TestWalletKeyFor_OKX_SpotNoKey verifies OKX spot is NOT recognized — only
+// perps/swap uses margin positions that need shared-wallet grouping (#357).
+func TestWalletKeyFor_OKX_SpotNoKey(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-key-abc")
+
+	sc := StrategyConfig{ID: "okx-sma-btc", Platform: "okx", Type: "spot",
+		Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+
+	if _, ok := walletKeyFor(sc); ok {
+		t.Errorf("expected no wallet key for OKX spot (not in registry)")
+	}
+}
+
+// TestWalletKeyFor_OKX_MissingEnvVar verifies missing OKX_API_KEY returns no key.
+func TestWalletKeyFor_OKX_MissingEnvVar(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "")
+
+	sc := StrategyConfig{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
+		Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+
+	if _, ok := walletKeyFor(sc); ok {
+		t.Errorf("expected no wallet key when OKX_API_KEY is unset")
+	}
+}
+
+// TestWalletKeyFor_TopStep_FuturesLive verifies TopStep futures live recognition
+// via TOPSTEP_ACCOUNT_ID (#357 phase 1a).
+func TestWalletKeyFor_TopStep_FuturesLive(t *testing.T) {
+	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
+
+	sc := StrategyConfig{ID: "ts-sma-es", Platform: "topstep", Type: "futures",
+		Args: []string{"sma", "ES", "15m", "--mode=live"}}
+
+	key, ok := walletKeyFor(sc)
+	if !ok {
+		t.Fatalf("expected TopStep futures live to produce a wallet key")
+	}
+	if key.Platform != "topstep" || key.Account != "ts-account-42" {
+		t.Errorf("unexpected key %+v", key)
+	}
+}
+
+// TestWalletKeyFor_TopStep_PaperNoKey verifies paper-mode TopStep returns no key.
+func TestWalletKeyFor_TopStep_PaperNoKey(t *testing.T) {
+	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
+
+	sc := StrategyConfig{ID: "ts-sma-es", Platform: "topstep", Type: "futures",
+		Args: []string{"sma", "ES", "15m", "--mode=paper"}}
+
+	if _, ok := walletKeyFor(sc); ok {
+		t.Errorf("expected no wallet key for paper-mode TopStep")
+	}
+}
+
+// TestWalletKeyFor_TopStep_MissingEnvVar verifies missing TOPSTEP_ACCOUNT_ID
+// returns no key.
+func TestWalletKeyFor_TopStep_MissingEnvVar(t *testing.T) {
+	t.Setenv("TOPSTEP_ACCOUNT_ID", "")
+
+	sc := StrategyConfig{ID: "ts-sma-es", Platform: "topstep", Type: "futures",
+		Args: []string{"sma", "ES", "15m", "--mode=live"}}
+
+	if _, ok := walletKeyFor(sc); ok {
+		t.Errorf("expected no wallet key when TOPSTEP_ACCOUNT_ID is unset")
+	}
+}
+
+// TestWalletKeyFor_Robinhood_CryptoLive verifies Robinhood crypto spot live
+// recognition via ROBINHOOD_USERNAME (#357 phase 1a). Multiple strategies
+// trading the same asset from one RH account share its spot balance.
+func TestWalletKeyFor_Robinhood_CryptoLive(t *testing.T) {
+	t.Setenv("ROBINHOOD_USERNAME", "rh-user@example.com")
+
+	sc := StrategyConfig{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+		Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+
+	key, ok := walletKeyFor(sc)
+	if !ok {
+		t.Fatalf("expected Robinhood crypto live to produce a wallet key")
+	}
+	if key.Platform != "robinhood" || key.Account != "rh-user@example.com" {
+		t.Errorf("unexpected key %+v", key)
+	}
+}
+
+// TestWalletKeyFor_Robinhood_PaperNoKey verifies paper-mode RH returns no key.
+func TestWalletKeyFor_Robinhood_PaperNoKey(t *testing.T) {
+	t.Setenv("ROBINHOOD_USERNAME", "rh-user@example.com")
+
+	sc := StrategyConfig{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
+		Args: []string{"sma", "BTC", "1h", "--mode=paper"}}
+
+	if _, ok := walletKeyFor(sc); ok {
+		t.Errorf("expected no wallet key for paper-mode Robinhood")
+	}
+}
+
+// TestWalletKeyFor_Robinhood_OptionsNoKey verifies RH options is NOT recognized
+// (leg-aware close semantics are out of scope — tracked in #363).
+func TestWalletKeyFor_Robinhood_OptionsNoKey(t *testing.T) {
+	t.Setenv("ROBINHOOD_USERNAME", "rh-user@example.com")
+
+	sc := StrategyConfig{ID: "rh-ccall-spy", Platform: "robinhood", Type: "options",
+		Args: []string{"ccall", "SPY", "1h", "--mode=live"}}
+
+	if _, ok := walletKeyFor(sc); ok {
+		t.Errorf("expected no wallet key for Robinhood options (not in registry)")
+	}
+}
+
+// TestDetectSharedWallets_OKXExcludedNoFetcher is the critical regression test
+// for #357 phase 1a: two live OKX perps strategies on the same API key must NOT
+// be returned by detectSharedWallets because OKX has no registered balance
+// fetcher yet. Including them would cause computeTotalPortfolioValue to freeze
+// the portfolio peak every cycle via the max-of-members fallback.
+func TestDetectSharedWallets_OKXExcludedNoFetcher(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-key-abc")
+
+	strategies := []StrategyConfig{
+		{ID: "okx-sma-btc", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "okx-rsi-eth", Platform: "okx", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+	}
+
+	shared := detectSharedWallets(strategies)
+	if len(shared) != 0 {
+		t.Errorf("expected OKX to be excluded from detectSharedWallets until a balance fetcher exists; got %d entries", len(shared))
+	}
+
+	// walletKeyFor itself SHOULD recognize them — the exclusion is only at the
+	// detection layer. Future CB code relies on direct walletKeyFor calls.
+	for _, sc := range strategies {
+		if _, ok := walletKeyFor(sc); !ok {
+			t.Errorf("walletKeyFor should recognize %s even though detectSharedWallets filters it", sc.ID)
+		}
+	}
+}
+
+// TestDetectSharedWallets_TopStepExcludedNoFetcher — same as OKX, for TopStep.
+func TestDetectSharedWallets_TopStepExcludedNoFetcher(t *testing.T) {
+	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
+
+	strategies := []StrategyConfig{
+		{ID: "ts-sma-es", Platform: "topstep", Type: "futures", Args: []string{"sma", "ES", "15m", "--mode=live"}, Capital: 5000},
+		{ID: "ts-rsi-nq", Platform: "topstep", Type: "futures", Args: []string{"rsi", "NQ", "15m", "--mode=live"}, Capital: 5000},
+	}
+
+	shared := detectSharedWallets(strategies)
+	if len(shared) != 0 {
+		t.Errorf("expected TopStep to be excluded from detectSharedWallets until a balance fetcher exists; got %d entries", len(shared))
+	}
+}
+
+// TestDetectSharedWallets_RobinhoodExcludedNoFetcher — same as OKX, for Robinhood.
+func TestDetectSharedWallets_RobinhoodExcludedNoFetcher(t *testing.T) {
+	t.Setenv("ROBINHOOD_USERNAME", "rh-user@example.com")
+
+	strategies := []StrategyConfig{
+		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "rh-rsi-eth", Platform: "robinhood", Type: "spot", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+	}
+
+	shared := detectSharedWallets(strategies)
+	if len(shared) != 0 {
+		t.Errorf("expected Robinhood to be excluded from detectSharedWallets until a balance fetcher exists; got %d entries", len(shared))
+	}
+}
+
+// TestHasSharedWalletBalanceFetcher_HLOnly locks in the contract that only HL
+// has a balance fetcher today. When phases 2-4 add fetchers for OKX / TS / RH,
+// this test should be updated in the same PR as the fetcher wiring.
+func TestHasSharedWalletBalanceFetcher_HLOnly(t *testing.T) {
+	cases := map[string]bool{
+		"hyperliquid": true,
+		"okx":         false,
+		"topstep":     false,
+		"robinhood":   false,
+		"binanceus":   false,
+		"unknown":     false,
+	}
+	for platform, want := range cases {
+		if got := hasSharedWalletBalanceFetcher(platform); got != want {
+			t.Errorf("hasSharedWalletBalanceFetcher(%q) = %v; want %v", platform, got, want)
+		}
+	}
+}
+
+// TestDetectSharedWallets_MixedHLAndOKX verifies that when HL and OKX live
+// strategies are configured together, HL is still grouped (fetcher exists) and
+// OKX is still filtered out (no fetcher yet) in the SAME detection pass. Guards
+// against future refactors accidentally cross-contaminating the platform
+// filter.
+func TestDetectSharedWallets_MixedHLAndOKX(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xhl")
+	t.Setenv("OKX_API_KEY", "okx-key-abc")
+
+	strategies := []StrategyConfig{
+		{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "hl-rsi-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "okx-sma-btc", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
+		{ID: "okx-rsi-eth", Platform: "okx", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
+	}
+
+	shared := detectSharedWallets(strategies)
+	if len(shared) != 1 {
+		t.Fatalf("expected exactly 1 shared wallet (HL); got %d entries %+v", len(shared), shared)
+	}
+	hlKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xhl"}
+	ids, ok := shared[hlKey]
+	if !ok {
+		t.Fatalf("expected HL wallet in shared set; got %+v", shared)
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 HL strategies grouped; got %d (%v)", len(ids), ids)
+	}
+	// Confirm OKX was filtered at detection, not at walletKeyFor.
+	for _, sc := range strategies {
+		if sc.Platform != "okx" {
+			continue
+		}
+		if _, ok := walletKeyFor(sc); !ok {
+			t.Errorf("walletKeyFor should still recognize OKX strategy %s", sc.ID)
+		}
+	}
+}
+
+// TestWalletKeyFor_SplitModeLiveRecognized verifies that the split-form
+// "--mode live" (separate args) is recognized as live, not just the joined
+// "--mode=live" form. HasLiveStrategy accepts both forms; walletKeyFor must
+// agree so a split-form config does not silently bypass shared-wallet grouping.
+func TestWalletKeyFor_SplitModeLiveRecognized(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"sma", "BTC", "1h", "--mode", "live"}}
+
+	key, ok := walletKeyFor(sc)
+	if !ok {
+		t.Fatalf("expected split-form --mode live to be recognized as live")
+	}
+	if key.Platform != "hyperliquid" || key.Account != "0xtest" {
+		t.Errorf("unexpected key %+v", key)
+	}
+}
+
 // TestDetectSharedWallets_NoEnvVar verifies that without HYPERLIQUID_ACCOUNT_ADDRESS
 // no wallets are detected as shared (we have no way to identify them).
 func TestDetectSharedWallets_NoEnvVar(t *testing.T) {
