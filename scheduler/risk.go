@@ -556,6 +556,14 @@ const PlatformPendingCloseHyperliquid = "hyperliquid"
 // OKX perpetual swap reduce-only closes (#360 phase 2 of #357).
 const PlatformPendingCloseOKX = "okx"
 
+// PlatformPendingCloseRobinhood is the map key in RiskState.PendingCircuitCloses
+// for Robinhood crypto closes (#361 phase 3). Robinhood crypto has no
+// reduce-only primitive — the drain submits a full market_sell of the coin's
+// on-account balance, gated on sole-ownership (only one live configured RH
+// crypto strategy trading that coin on the account). Shared-coin setups
+// cannot CB-close safely and are surfaced to the owner via DM instead.
+const PlatformPendingCloseRobinhood = "robinhood"
+
 // PendingCircuitClose is a queued request to close one or more positions on a
 // single venue after a per-strategy circuit breaker fired. The drain runner
 // for that venue (platform key in RiskState.PendingCircuitCloses) translates
@@ -579,13 +587,27 @@ type PendingCircuitCloseSymbol struct {
 // drain runner's stuck-CB recovery path then re-enqueues once the fetch
 // succeeds on a later cycle (#356).
 //
-// HL and OKX fields are populated today (#356, #360). TopStep / Robinhood
-// fields land in phases 3-4 as their per-strategy close plumbing ships.
+// HL and OKX fields are populated today (#356, #360). RH fields are defined
+// here for phase 3 (#361) but left unpopulated at the CheckRisk call site in
+// main.go — see setRobinhoodCircuitBreakerPending for why the RH enqueue is
+// driven exclusively by the drain's stuck-CB recovery path rather than at
+// CB-fire time. TopStep fields land in phase 4.
 type PlatformRiskAssist struct {
 	HLPositions  []HLPosition
 	HLLiveAll    []StrategyConfig
 	OKXPositions []OKXPosition
 	OKXLiveAll   []StrategyConfig
+	// RHPositions is reserved for a future main.go wiring that fetches live
+	// Robinhood crypto balances once per cycle. It is intentionally left nil
+	// at the CheckRisk call site today (see setRobinhoodCircuitBreakerPending
+	// doc for rationale — fetching per cycle would cost a TOTP round-trip
+	// even when no CB fires).
+	RHPositions []RobinhoodPosition
+	// RHLiveAll mirrors HLLiveAll/OKXLiveAll: every live configured Robinhood
+	// crypto (Type=="spot") strategy. Consumed by the sole-owner check in the
+	// drain before submitting a full-account market_sell. Left nil at the
+	// CheckRisk call site today — see setRobinhoodCircuitBreakerPending.
+	RHLiveAll []StrategyConfig
 }
 
 // MarshalPendingCircuitClosesJSON returns a DB-safe JSON blob for the pending
@@ -737,6 +759,69 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
 		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
 	})
+}
+
+// setRobinhoodCircuitBreakerPending enqueues a pending full-close for a live
+// Robinhood crypto strategy whose per-strategy circuit breaker fired (#361
+// phase 3). Robinhood crypto has no reduce-only primitive: market_sell
+// consumes the entire on-account balance for the coin. We still enqueue
+// unconditionally when an on-account position exists — the sole-ownership
+// gate lives in the drain (runPendingRobinhoodCircuitCloses) so that shared-
+// coin setups DM the owner exactly once per fire cycle rather than silently
+// stalling forever.
+//
+// Wiring note (important): under the current main.go wiring, `assist` is
+// built from HL and OKX pre-fetches only — `assist.RHPositions` is always
+// nil when CheckRisk calls this setter (see scheduler/main.go where the
+// riskAssist literal sets HLPositions/HLLiveAll/OKXPositions/OKXLiveAll but
+// leaves RH fields unset). This function therefore no-ops on the CB-fire
+// cycle itself and relies on the drain's stuck-CB recovery path
+// (runPendingRobinhoodCircuitCloses) to reconstruct the pending leg on the
+// next cycle once the drain's lazy RH positions fetch succeeds. The trade-
+// off is deliberate: wiring RH into CheckRisk would require a live TOTP
+// round-trip every cycle (including cycles where no RH CB fires), which is
+// the exact cost we are avoiding. Do not "fix" this by populating
+// assist.RHPositions at the CheckRisk call site without revisiting the
+// lazy-fetch design, or every cycle will pay a TOTP round-trip for an RH
+// CB that fires maybe once per month.
+//
+// No-op also when assist is nil (defensive — same code path as the design
+// above, mirroring the HL pattern).
+func setRobinhoodCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
+	if sc == nil || assist == nil || len(assist.RHPositions) == 0 {
+		return
+	}
+	if sc.Platform != "robinhood" || sc.Type != "spot" || !robinhoodIsLive(sc.Args) {
+		return
+	}
+	coin := robinhoodSymbol(sc.Args)
+	if coin == "" {
+		return
+	}
+	if _, ok := s.Positions[coin]; !ok {
+		return
+	}
+	qty := robinhoodOnAccountSize(coin, assist.RHPositions)
+	if qty <= 0 {
+		return
+	}
+	s.RiskState.setPendingCircuitClose(PlatformPendingCloseRobinhood, &PendingCircuitClose{
+		Symbols: []PendingCircuitCloseSymbol{{Symbol: coin, Size: qty}},
+	})
+}
+
+// robinhoodOnAccountSize returns the unsigned on-account size of a coin,
+// or 0 if not found. Robinhood crypto is spot so Size is always >= 0.
+func robinhoodOnAccountSize(coin string, positions []RobinhoodPosition) float64 {
+	for i := range positions {
+		if positions[i].Coin == coin {
+			if positions[i].Size > 0 {
+				return positions[i].Size
+			}
+			return 0
+		}
+	}
+	return 0
 }
 
 // setOKXCircuitBreakerPending mirrors setHyperliquidCircuitBreakerPending for
@@ -984,6 +1069,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
 			setOKXCircuitBreakerPending(sc, s, assist)
+			setRobinhoodCircuitBreakerPending(sc, s, assist)
 			forceCloseAllPositions(s, prices, logger)
 			return false, fmt.Sprintf("max drawdown exceeded (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
@@ -995,6 +1081,8 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		r.CircuitBreaker = true
 		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
 		setHyperliquidCircuitBreakerPending(sc, s, assist)
+		setOKXCircuitBreakerPending(sc, s, assist)
+		setRobinhoodCircuitBreakerPending(sc, s, assist)
 		forceCloseAllPositions(s, prices, logger)
 		return false, "5 consecutive losses"
 	}

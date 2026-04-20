@@ -642,6 +642,7 @@ func main() {
 					if ss != nil {
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
+						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
 					}
 				}
 			}
@@ -813,6 +814,27 @@ func main() {
 						defaultOKXPositionsFetcher,
 						defaultOKXLiveCloser,
 						90*time.Second,
+						&mu,
+					)
+				}
+				// #361 phase 3: Live Robinhood crypto per-strategy circuit breaker
+				// closes. RH crypto has no reduce-only primitive, so each pending
+				// leg is a full-account market_sell guarded by a sole-ownership
+				// gate (DM the owner when a shared-coin config prevents a safe
+				// close). Lazy fetch — drain only calls the positions fetcher
+				// when pending/stuck-CB work is present, so idle cycles skip the
+				// TOTP login round-trip entirely.
+				if len(rhLiveCrypto) > 0 {
+					runPendingRobinhoodCircuitCloses(
+						context.Background(),
+						state,
+						cfg.Strategies,
+						nil,
+						false,
+						defaultRobinhoodPositionsFetcher,
+						defaultRobinhoodLiveCloser,
+						notifier.SendOwnerDM,
+						150*time.Second,
 						&mu,
 					)
 				}
