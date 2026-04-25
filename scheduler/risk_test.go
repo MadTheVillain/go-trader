@@ -773,7 +773,8 @@ func TestCheckRisk_ConsecutiveLossesForceClose(t *testing.T) {
 }
 
 // TestCheckPortfolioRisk_WarningFires verifies that drawdown at 80% of limit
-// triggers a warning once but not again on second call.
+// triggers a warning on every call while the portfolio remains in the warning
+// band.
 func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000.0}
@@ -790,15 +791,77 @@ func TestCheckPortfolioRisk_WarningFires(t *testing.T) {
 		t.Error("expected WarningSent=true after warning fires")
 	}
 
-	// Second call at same drawdown — warning should NOT fire again.
-	_, _, warning, _ = CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
-	if warning {
-		t.Error("expected warning=false on second call (already sent)")
+	// Second call at same drawdown — warning should fire again so operators get
+	// a reminder each cycle while the account remains in the warning band.
+	_, _, warning, reason = CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+	if !warning {
+		t.Error("expected warning=true on second call while still in warning band")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for repeated warning")
+	}
+}
+
+// TestCheckPortfolioRisk_WarningRepeatsAcrossCycles verifies that warning
+// fires on every cycle while drawdown remains in the warn band, even with no
+// recovery in between.
+func TestCheckPortfolioRisk_WarningRepeatsAcrossCycles(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	// Warn threshold = 20%. Hold portfolio at 21% drawdown across many cycles.
+	for i := 0; i < 5; i++ {
+		_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+		if !warning {
+			t.Errorf("cycle %d: expected warning=true while in warn band", i)
+		}
+		if reason == "" {
+			t.Errorf("cycle %d: expected non-empty reason", i)
+		}
+		if !prs.WarningSent {
+			t.Errorf("cycle %d: expected WarningSent=true while in warn band", i)
+		}
+	}
+}
+
+// TestCheckPortfolioRisk_WarnBandEnteredTransition verifies that the
+// prevWarningSent snapshot pattern used by main.go correctly identifies only
+// the first cycle as a warn-band entry. This prevents the kill-switch event
+// log from being flooded by repeat "warning" entries while drawdown stays in
+// the warn band.
+func TestCheckPortfolioRisk_WarnBandEnteredTransition(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000.0}
+
+	for i := 0; i < 5; i++ {
+		prevWarningSent := prs.WarningSent
+		_, _, warning, _ := CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+		enteredWarnBand := warning && !prevWarningSent
+		if i == 0 {
+			if !enteredWarnBand {
+				t.Error("cycle 0: expected enteredWarnBand=true on first entry")
+			}
+		} else {
+			if enteredWarnBand {
+				t.Errorf("cycle %d: expected enteredWarnBand=false while already in warn band", i)
+			}
+		}
+	}
+
+	// After recovery, re-entering the band should produce enteredWarnBand=true again.
+	CheckPortfolioRisk(prs, cfg, 8500.0, 0, 0, 0) // recover below warn threshold
+	prevWarningSent := prs.WarningSent
+	_, _, warning, _ := CheckPortfolioRisk(prs, cfg, 7900.0, 0, 0, 0)
+	if !warning {
+		t.Error("expected warning=true after re-crossing warn threshold")
+	}
+	if !warning || prevWarningSent {
+		t.Error("expected enteredWarnBand=true on re-entry after recovery")
 	}
 }
 
 // TestCheckPortfolioRisk_WarningResetOnRecovery verifies that recovery below
-// the warning threshold resets WarningSent so it can fire again.
+// the warning threshold resets WarningSent.
 func TestCheckPortfolioRisk_WarningResetOnRecovery(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000.0}
@@ -1783,6 +1846,14 @@ func TestCheckPortfolioRisk_MarginWarning(t *testing.T) {
 	}
 	if prs.KillSwitchActive {
 		t.Error("expected kill switch NOT active (warning, not fire)")
+	}
+
+	_, _, warning, reason = CheckPortfolioRisk(prs, cfg, 10000, 0, 210, 1000)
+	if !warning {
+		t.Errorf("expected repeated warning=true while margin drawdown remains above threshold; reason=%q", reason)
+	}
+	if !strings.Contains(reason, "margin") {
+		t.Errorf("expected repeated warning reason to reference margin; got %q", reason)
 	}
 }
 
