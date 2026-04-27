@@ -2250,3 +2250,53 @@ func TestRiskState_PendingCircuitClose_MultiPlatformRoundTrip(t *testing.T) {
 		t.Error("okx entry lost in round-trip")
 	}
 }
+
+// TestRiskState_PendingCircuitClose_ConsecutiveFailureserRoundTrip verifies that
+// ConsecutiveFailures and LastNotifiedAt survive Marshal/Unmarshal so a stuck CB close
+// loop remembers how many attempts have fired across restarts and throttles
+// notifications correctly (#427).
+func TestRiskState_PendingCircuitClose_ConsecutiveFailureserRoundTrip(t *testing.T) {
+	notifiedAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+		PlatformPendingCloseHyperliquid: {
+			Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
+			ConsecutiveFailures: 7,
+			LastNotifiedAt:      notifiedAt,
+		},
+	}}
+	blob := src.MarshalPendingCircuitClosesJSON()
+	if blob == "" {
+		t.Fatal("expected non-empty JSON blob")
+	}
+	var dst RiskState
+	dst.UnmarshalPendingCircuitClosesJSON(blob)
+	got := dst.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if got == nil {
+		t.Fatal("entry lost in round-trip")
+	}
+	if got.ConsecutiveFailures != 7 {
+		t.Errorf("ConsecutiveFailures: got %d, want 7", got.ConsecutiveFailures)
+	}
+	if !got.LastNotifiedAt.Equal(notifiedAt) {
+		t.Errorf("LastNotifiedAt: got %v, want %v", got.LastNotifiedAt, notifiedAt)
+	}
+}
+
+// TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroConsecutiveFailures verifies
+// that pre-#427 DB rows (which have no failure_count field) load with
+// ConsecutiveFailures=0 so the first new-code failure increments to 1 and notifies.
+func TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroConsecutiveFailures(t *testing.T) {
+	var r RiskState
+	// Legacy DB row has no failure_count or last_notified_at fields.
+	r.UnmarshalPendingCircuitClosesJSON(`{"hyperliquid":{"symbols":[{"symbol":"ETH","size":0.25}]}}`)
+	got := r.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if got == nil {
+		t.Fatal("entry not loaded")
+	}
+	if got.ConsecutiveFailures != 0 {
+		t.Errorf("legacy row must default ConsecutiveFailures=0, got %d", got.ConsecutiveFailures)
+	}
+	if !got.LastNotifiedAt.IsZero() {
+		t.Errorf("legacy row must default LastNotifiedAt=zero, got %v", got.LastNotifiedAt)
+	}
+}

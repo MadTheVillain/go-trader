@@ -769,6 +769,7 @@ func runPendingHyperliquidCircuitCloses(
 	closer HyperliquidLiveCloser,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
+	ownerDM func(string),
 ) {
 	if hlAddr == "" || closer == nil || state == nil {
 		return
@@ -918,6 +919,10 @@ func runPendingHyperliquidCircuitCloses(
 		}
 
 		allOK := true
+		drainError := false // set on closer() error; not set for under-fills (partial progress)
+		var drainErrSym string
+		var drainErrSz float64
+		var drainErrMsg string
 		for _, c := range j.pending.Symbols {
 			if err := ctxOverall.Err(); err != nil {
 				allOK = false
@@ -949,6 +954,10 @@ func runPendingHyperliquidCircuitCloses(
 			if err != nil {
 				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
+				drainError = true
+				drainErrSym = c.Symbol
+				drainErrSz = sz
+				drainErrMsg = err.Error()
 				break
 			}
 
@@ -1032,12 +1041,38 @@ func runPendingHyperliquidCircuitCloses(
 			}
 		}
 
-		if allOK {
-			mu.Lock()
-			if ss := state.Strategies[j.stratID]; ss != nil {
+		// Post-loop: update ConsecutiveFailures counter and fire owner DM.
+		// drainError = true only on a hard closer() error; under-fills are
+		// partial progress that reset the counter to 0 — but ONLY when the
+		// cycle had no hard error at all. In a multi-symbol pending list where
+		// one leg under-fills and another hard-errors, drainError wins (we
+		// still increment) so the operator is alerted to the failed leg.
+		var failCount int
+		var shouldAlert bool
+		now := time.Now().UTC()
+		mu.Lock()
+		if ss := state.Strategies[j.stratID]; ss != nil {
+			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+			} else if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
+				if drainError {
+					p.ConsecutiveFailures++
+					failCount = p.ConsecutiveFailures
+					if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
+						p.LastNotifiedAt = now
+						shouldAlert = true
+					}
+				} else {
+					// Under-fill only — partial progress. Reset so the next
+					// hard error re-notifies as a fresh first failure.
+					p.ConsecutiveFailures = 0
+				}
 			}
-			mu.Unlock()
+		}
+		mu.Unlock()
+
+		if shouldAlert && ownerDM != nil {
+			ownerDM(formatDrainFailureAlert("hyperliquid", j.stratID, drainErrSym, drainErrSz, drainErrMsg, failCount))
 		}
 	}
 }

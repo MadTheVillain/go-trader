@@ -615,9 +615,19 @@ const (
 // #363). The drain emits a CRITICAL warning each cycle instead and leaves the
 // pending populated so /status, Discord, and Telegram all surface the gap
 // continuously until the operator clears it manually.
+//
+// ConsecutiveFailures and LastNotifiedAt track consecutive close-attempt
+// failures (without any partial progress) for the throttled owner-DM alert
+// added in #427. The drain increments ConsecutiveFailures on each hard error
+// and resets it to 0 on any partial fill progress. The DM fires on the first
+// failure, every 10th consecutive failure, or once per hour — whichever fires
+// first. The counter is discarded together with the entry when the close
+// fully succeeds.
 type PendingCircuitClose struct {
-	Symbols          []PendingCircuitCloseSymbol `json:"symbols"`
-	OperatorRequired bool                        `json:"operator_required,omitempty"`
+	Symbols             []PendingCircuitCloseSymbol `json:"symbols"`
+	OperatorRequired    bool                        `json:"operator_required,omitempty"`
+	ConsecutiveFailures int                         `json:"consecutive_failures,omitempty"`
+	LastNotifiedAt      time.Time                   `json:"last_notified_at,omitempty"`
 }
 
 // PendingCircuitCloseSymbol is one position leg of a pending close. Symbol is

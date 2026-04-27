@@ -212,6 +212,9 @@ func runPendingRobinhoodCircuitCloses(
 		}
 
 		allOK := true
+		var failedCoin string
+		var failedSize float64
+		var failedErr error
 		for _, c := range j.pending.Symbols {
 			// Defense in depth: re-check the on-account balance right before
 			// submit (it may have drained since enqueue via stuck-CB recovery
@@ -253,6 +256,9 @@ func runPendingRobinhoodCircuitCloses(
 			if err != nil {
 				fmt.Printf("[CRITICAL] rh-circuit-close: strategy %s coin %s failed: %v\n", j.stratID, c.Symbol, err)
 				allOK = false
+				failedCoin = c.Symbol
+				failedSize = c.Size
+				failedErr = err
 				break
 			}
 			if result != nil && result.Close != nil && result.Close.AlreadyFlat {
@@ -276,8 +282,11 @@ func runPendingRobinhoodCircuitCloses(
 		// recovery controls whether to re-enqueue next cycle. If the shared
 		// configuration persists, recovery's sole-owner gate will again skip
 		// + DM, giving the operator a steady audit trail until they fix it.
-		// For genuine submit errors we preserve pending so the next cycle's
-		// drain retries (same semantics as HL).
+		// For genuine submit errors we preserve pending and increment the
+		// consecutive-failure counter for throttled owner-DM alerts (#427).
+		var failCount int
+		var shouldAlert bool
+		now := time.Now().UTC()
 		mu.Lock()
 		if ss := state.Strategies[j.stratID]; ss != nil {
 			sharedOnly := true
@@ -290,9 +299,22 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			if sharedOnly {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
+			} else if failedErr != nil {
+				if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood); p != nil {
+					p.ConsecutiveFailures++
+					failCount = p.ConsecutiveFailures
+					if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
+						p.LastNotifiedAt = now
+						shouldAlert = true
+					}
+				}
 			}
 		}
 		mu.Unlock()
+
+		if shouldAlert && sendOwnerDM != nil {
+			sendOwnerDM(formatDrainFailureAlert("robinhood", j.stratID, failedCoin, failedSize, failedErr.Error(), failCount))
+		}
 	}
 }
 

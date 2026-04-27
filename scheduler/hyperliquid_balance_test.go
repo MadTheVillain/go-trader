@@ -1572,6 +1572,7 @@ func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 1 || calls[0] != "ETH:0.4" {
 		t.Errorf("closer calls=%v want [ETH:0.4] (recovered pending should drain full szi as sole owner)", calls)
@@ -1617,6 +1618,7 @@ func TestRunPendingHyperliquidCircuitCloses_StuckCBNoOnChainPositionIsNoOp(t *te
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if len(calls) != 0 {
 		t.Errorf("expected no closer calls when no on-chain position, got %v", calls)
@@ -1669,6 +1671,7 @@ func TestRunPendingHyperliquidCircuitCloses_ClearsOnSuccess(t *testing.T) {
 		closer,
 		30*time.Second,
 		&mu,
+		nil,
 	)
 	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 		t.Error("expected pending cleared after successful close")
@@ -1718,6 +1721,7 @@ func TestRunPendingHyperliquidCircuitCloses_PartialFillKeepsPendingAndDecrements
 		context.Background(), state, cfg, "0xabc",
 		[]HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 3000}}, true,
 		nil, closer, 30*time.Second, &mu,
+		nil,
 	)
 
 	// Pending must NOT be cleared — residual 0.5 must retry next cycle.
@@ -1789,6 +1793,7 @@ func TestRunPendingHyperliquidCircuitCloses_FullFillDecrementsAndClears(t *testi
 		context.Background(), state, cfg, "0xabc",
 		[]HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}, true,
 		nil, closer, 30*time.Second, &mu,
+		nil,
 	)
 
 	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
@@ -1865,6 +1870,7 @@ func TestRunPendingHyperliquidCircuitCloses_SharedCoinDecrementsFiringStrategy(t
 		context.Background(), state, cfg, "0xabc",
 		[]HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 3000}}, true,
 		nil, closer, 30*time.Second, &mu,
+		nil,
 	)
 
 	// Firing strategy's virtual position should be fully closed.
@@ -1945,6 +1951,7 @@ func TestRunPendingHyperliquidCircuitCloses_ZeroFillKeepsPending(t *testing.T) {
 		context.Background(), state, cfg, "0xabc",
 		[]HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 3000}}, true,
 		nil, closer, 30*time.Second, &mu,
+		nil,
 	)
 
 	// Pending must NOT be cleared — nothing on-chain has actually been flattened.
@@ -2005,6 +2012,7 @@ func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *t
 		context.Background(), state, cfg, "0xabc",
 		[]HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 3000}}, true,
 		nil, cycle1, 30*time.Second, &mu,
+		nil,
 	)
 
 	// After cycle 1: pending preserved, position decremented to 0.6, AvgCost untouched.
@@ -2036,6 +2044,7 @@ func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *t
 		context.Background(), state, cfg, "0xabc",
 		[]HLPosition{{Coin: "ETH", Size: 0.6, EntryPrice: 3000}}, true,
 		nil, cycle2, 30*time.Second, &mu,
+		nil,
 	)
 
 	// Position fully closed; pending cleared.
@@ -2094,5 +2103,156 @@ func TestApplyHyperliquidCircuitCloseFill_NoPositionLongCloseRecordsSell(t *test
 	}
 	if s.TradeHistory[0].Side != "sell" {
 		t.Errorf("Side = %q; want sell (closing a long)", s.TradeHistory[0].Side)
+	}
+}
+
+// TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies
+// verifies that a close error increments ConsecutiveFailures to 1 and fires the
+// notifier exactly once (#427).
+func TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(symbol string, sz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+		return nil, fmt.Errorf("float_to_wire causes rounding")
+	}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.25}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		ownerDM,
+	)
+	p := state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if p == nil {
+		t.Fatal("pending should be preserved on close failure")
+	}
+	if p.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures: got %d, want 1", p.ConsecutiveFailures)
+	}
+	if len(dmMsgs) != 1 {
+		t.Errorf("expected 1 DM on first failure, got %d", len(dmMsgs))
+	}
+}
+
+// TestRunPendingHyperliquidCircuitCloses_RepeatedFailureThrottlesNotifier
+// verifies that failure #2 is suppressed when LastNotifiedAt was just set.
+func TestRunPendingHyperliquidCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
+							ConsecutiveFailures: 1,
+							LastNotifiedAt:      time.Now(),
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(symbol string, sz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+		return nil, fmt.Errorf("float_to_wire causes rounding")
+	}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.25}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		ownerDM,
+	)
+	if len(dmMsgs) != 0 {
+		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(dmMsgs))
+	}
+}
+
+// TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies verifies that
+// failure #10 fires the notifier (every-10th cadence).
+func TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseHyperliquid: {
+							Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
+							ConsecutiveFailures: 9,
+							LastNotifiedAt:      time.Now(),
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(symbol string, sz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+		return nil, fmt.Errorf("float_to_wire causes rounding")
+	}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.25}},
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		ownerDM,
+	)
+	p := state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if p == nil || p.ConsecutiveFailures != 10 {
+		t.Fatalf("expected ConsecutiveFailures=10, got %v", p)
+	}
+	if len(dmMsgs) != 1 {
+		t.Errorf("expected 1 DM on failure #10 (every-10th cadence), got %d", len(dmMsgs))
 	}
 }

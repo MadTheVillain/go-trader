@@ -500,3 +500,96 @@ func TestFormatRobinhoodSharedOwnerDM_DeterministicPeerOrder(t *testing.T) {
 		t.Errorf("peer IDs not in sorted order in peer list: %q", peerList)
 	}
 }
+
+func TestRunPendingRobinhoodCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"rh-a": {
+				ID: "rh-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseRobinhood: {
+							Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.01}},
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "rh-a", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string) (*RobinhoodCloseResult, error) {
+		return nil, fmt.Errorf("rh timeout")
+	}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
+	runPendingRobinhoodCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		[]RobinhoodPosition{{Coin: "BTC", Size: 0.01}},
+		true,
+		nil,
+		closer,
+		ownerDM,
+		30*time.Second,
+		&mu,
+	)
+	p := state.Strategies["rh-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseRobinhood)
+	if p == nil {
+		t.Fatal("pending should be preserved on failure")
+	}
+	if p.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures: got %d, want 1", p.ConsecutiveFailures)
+	}
+	if len(dmMsgs) != 1 {
+		t.Errorf("expected 1 DM on first failure, got %d", len(dmMsgs))
+	}
+}
+
+func TestRunPendingRobinhoodCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"rh-a": {
+				ID: "rh-a",
+				RiskState: RiskState{
+					PendingCircuitCloses: map[string]*PendingCircuitClose{
+						PlatformPendingCloseRobinhood: {
+							Symbols:             []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.01}},
+							ConsecutiveFailures: 1,
+							LastNotifiedAt:      time.Now(),
+						},
+					},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "rh-a", Platform: "robinhood", Type: "spot",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	closer := func(sym string) (*RobinhoodCloseResult, error) {
+		return nil, fmt.Errorf("rh timeout")
+	}
+	var dmMsgs []string
+	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
+	runPendingRobinhoodCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		[]RobinhoodPosition{{Coin: "BTC", Size: 0.01}},
+		true,
+		nil,
+		closer,
+		ownerDM,
+		30*time.Second,
+		&mu,
+	)
+	if len(dmMsgs) != 0 {
+		t.Errorf("expected 0 DMs on failure #2 (suppressed), got %d", len(dmMsgs))
+	}
+}

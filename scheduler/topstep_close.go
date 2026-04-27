@@ -207,6 +207,7 @@ func runPendingTopStepCircuitCloses(
 	closer TopStepLiveCloser,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
+	ownerDM func(string),
 ) {
 	if closer == nil || state == nil {
 		return
@@ -335,6 +336,9 @@ func runPendingTopStepCircuitCloses(
 		}
 
 		allOK := true
+		var failedSym string
+		var failedAbsOC int
+		var failedErr error
 		for _, c := range j.pending.Symbols {
 			if err := ctxOverall.Err(); err != nil {
 				allOK = false
@@ -372,18 +376,41 @@ func runPendingTopStepCircuitCloses(
 				fmt.Printf("[CRITICAL] ts-circuit-close: strategy %s contract %s sz=%d failed: %v (will retry next cycle)\n",
 					j.stratID, c.Symbol, absOC, err)
 				allOK = false
+				failedSym = c.Symbol
+				failedAbsOC = absOC
+				failedErr = err
 				break
 			}
 			fmt.Printf("[INFO] ts-circuit-close: strategy %s contract %s submitted market_close sz=%d\n",
 				j.stratID, c.Symbol, absOC)
 		}
 
-		if allOK {
-			mu.Lock()
-			if ss := state.Strategies[j.stratID]; ss != nil {
+		var failCount int
+		var shouldAlert bool
+		now := time.Now().UTC()
+		mu.Lock()
+		if ss := state.Strategies[j.stratID]; ss != nil {
+			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
+			} else if failedErr != nil {
+				// Only count as a drain failure when a closer() actually errored.
+				// allOK can also be set false by a mid-loop ctxOverall expiry
+				// where failedErr stays nil — counting that would inflate the
+				// counter and dereferencing failedErr.Error() below would panic.
+				if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep); p != nil {
+					p.ConsecutiveFailures++
+					failCount = p.ConsecutiveFailures
+					if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
+						p.LastNotifiedAt = now
+						shouldAlert = true
+					}
+				}
 			}
-			mu.Unlock()
+		}
+		mu.Unlock()
+
+		if shouldAlert && ownerDM != nil && failedErr != nil {
+			ownerDM(formatDrainFailureAlert("topstep", j.stratID, failedSym, float64(failedAbsOC), failedErr.Error(), failCount))
 		}
 	}
 }

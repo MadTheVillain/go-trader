@@ -327,6 +327,7 @@ func runPendingOKXCircuitCloses(
 	closer OKXLiveCloser,
 	totalBudget time.Duration,
 	mu *sync.RWMutex,
+	ownerDM func(string),
 ) {
 	if !okxHasCreds || closer == nil || state == nil {
 		return
@@ -457,6 +458,9 @@ func runPendingOKXCircuitCloses(
 		}
 
 		allOK := true
+		var failedSym string
+		var failedSz float64
+		var failedErr error
 		for _, c := range j.pending.Symbols {
 			if err := ctxOverall.Err(); err != nil {
 				allOK = false
@@ -485,17 +489,40 @@ func runPendingOKXCircuitCloses(
 			if err != nil {
 				fmt.Printf("[CRITICAL] okx-circuit-close: strategy %s coin %s sz=%.6f failed: %v\n", j.stratID, c.Symbol, sz, err)
 				allOK = false
+				failedSym = c.Symbol
+				failedSz = sz
+				failedErr = err
 				break
 			}
 			fmt.Printf("[INFO] okx-circuit-close: strategy %s coin %s submitted reduce-only close sz=%.6f\n", j.stratID, c.Symbol, sz)
 		}
 
-		if allOK {
-			mu.Lock()
-			if ss := state.Strategies[j.stratID]; ss != nil {
+		var failCount int
+		var shouldAlert bool
+		now := time.Now().UTC()
+		mu.Lock()
+		if ss := state.Strategies[j.stratID]; ss != nil {
+			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
+			} else if failedErr != nil {
+				// Only count as a drain failure when a closer() actually errored.
+				// allOK can also be set false by a mid-loop ctxOverall expiry
+				// where failedErr stays nil — counting that would inflate the
+				// counter and dereferencing failedErr.Error() below would panic.
+				if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX); p != nil {
+					p.ConsecutiveFailures++
+					failCount = p.ConsecutiveFailures
+					if shouldNotifyDrainFailure(p.ConsecutiveFailures, p.LastNotifiedAt, now) {
+						p.LastNotifiedAt = now
+						shouldAlert = true
+					}
+				}
 			}
-			mu.Unlock()
+		}
+		mu.Unlock()
+
+		if shouldAlert && ownerDM != nil && failedErr != nil {
+			ownerDM(formatDrainFailureAlert("okx", j.stratID, failedSym, failedSz, failedErr.Error(), failCount))
 		}
 	}
 }
