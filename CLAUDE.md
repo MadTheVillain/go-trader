@@ -16,14 +16,14 @@
 - `scheduler/` — Go scheduler (single `package main`); all .go files compile together. Key files:
   - `executor.go` — Python subprocess runner; `pythonSemaphore` caps concurrency at 4, `scriptTimeout=30s`, SIGKILLs process group on timeout.
   - `server.go` — `/status`, `/health`, `/history`; `DefaultStatusPort=8099`, auto-fallback up to 5 ports; precedence: `--status-port` > `cfg.StatusPort` > default.
-  - `discord.go` — `discordgo.Session` wrapper; `SendMessage`/`SendDM`/`AskDM`; `FormatCategorySummary`. Summary cols: `Init | Value | PnL | PnL% | Max DD | Wallet% | Tf | Int | #T | W/L`; `Book Sharpe` footer.
+  - `discord.go` — `discordgo.Session` wrapper; `SendMessage`/`SendDM`/`AskDM`; `FormatCategorySummary`. Summary cols: `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` (DD rendered `%.0f%%`); `Book Sharpe` footer.
   - `init.go` — `go-trader init` wizard + `--json` mode; `generateConfig(InitOptions)` is pure/testable. Holds `bidirectionalPerpsStrategies`, `knownShortNames`, `defaultSpotStrategies` / `defaultPerpsStrategies` / `defaultFuturesStrategies`.
   - `config.go` / `config_migration.go` — `Config`, `StrategyConfig`; `LoadConfig` infers `Platform` from ID prefix; `CurrentConfigVersion=8`; `RiskFreeRate *float64` (nil → `DefaultAnnualRiskFreeRate`); `StopLossPct` HL-perps-only `[0,50]`.
   - `state.go` / `state_presence.go` / `db.go` — SQLite-only state (`modernc.org/sqlite`); `OpenStateDB`, `SaveStateWithDB`, `LoadStateWithDB`. Tables: `app_state`, `strategies`, `positions`, `closed_positions`, `option_positions`, `closed_option_positions`, `trades`, `portfolio_risk`, `kill_switch_events`, `correlation_snapshot`. `InsertTrade` writes immediately. `CheckStatePresence` warns on missing DB (`GO_TRADER_ALLOW_MISSING_STATE=1` for first-run).
   - `risk.go` / `strategy_interval.go` — `CheckRisk` takes `*PlatformRiskAssist`; `perpsMarginDrawdownInputs` for leverage-aware perps DD. `effectiveStrategyIntervalSeconds` accelerates checks in DD warn band; `WarningSent` repeats warnings every cycle while in band.
   - `kill_switch_close.go` + per-platform closers (`hyperliquid_balance.go`, `okx_close.go`, `robinhood_close.go`, `topstep_close.go`, `robinhood_pending_close.go`, `operator_required_close.go`) — portfolio kill switch + per-strategy CB drains.
   - `*_marks.go`, `deribit.go` — native Go price fetchers (HL `allMids`, OKX swap tickers, Deribit ticker); base URL exposed as `var xxxMainnetURL` for httptest stubs.
-  - `sharpe.go`, `failure_alerts.go`, `correlation.go`, `leaderboard.go`, `notifier.go`, `telegram.go`, `updater.go`, `pricer.go` (+ `ibkr_pricer.go`), `shared_wallet.go`, `version.go`, `prompt.go`, `balance.go`, `portfolio.go`, `options.go`, `logger.go`.
+  - `sharpe.go`, `failure_alerts.go`, `correlation.go`, `leaderboard.go`, `notifier.go`, `telegram.go`, `updater.go`, `pricer.go` (+ `ibkr_pricer.go`), `shared_wallet.go`, `version.go`, `prompt.go`, `balance.go`, `portfolio.go`, `options.go`, `logger.go`, `tradingview_export.go`, `config_reload.go`.
 - `shared_scripts/` — Python entry-points: `check_strategy.py` (spot), `check_options.py` (`--platform=deribit|ibkr|robinhood|okx`), `check_price.py`, `check_hyperliquid.py`, `check_topstep.py`, `check_robinhood.py`, `check_okx.py` (`--inst-type=spot|swap`), `check_balance.py`, `fetch_futures_marks.py`, plus per-platform `close_*.py` / `fetch_*_balance.py` / `fetch_*_positions.py`.
 - `platforms/<name>/adapter.py` — one `*ExchangeAdapter` class per file: `deribit`, `ibkr`, `binanceus`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`.
 - `shared_tools/` — `pricing.py`, `exchange_base.py`, `data_fetcher.py`, `storage.py`, `htf_filter.py`.
@@ -69,6 +69,7 @@
 - **`initial_capital` immutable:** `SaveState` refuses stale in-memory overwrites. ONLY write path: `StateDB.SetInitialCapital(strategyID, value)`.
 - SQLite column rename migration: use `PRAGMA table_info` to detect three states (neither, legacy-only, new-only); idempotent. `UnmarshalPendingCircuitClosesJSON` accepts both new map and legacy `{"coins":[...]}` shapes.
 - Per-trade stop-loss: `StopLossPct` (HL perps only) places reduce-only trigger; OID stored on `Position.StopLossOID`. `HyperliquidLiveCloser` close path takes `cancelStopLossOIDs []int64`.
+- **SIGHUP hot reload:** `applyHotReloadConfig` (config_reload.go) re-applies a subset of config without restart. `validateHotReloadCompatible` blocks shape changes (strategy add/remove, script/args/type/platform/HTFFilter, AllowShorts mid-run, kill-switch identity, DB path); `validateHotReloadStateCompatible` blocks per-strategy `leverage` changes when positions are open. Notifier reload re-routes Discord/Telegram channels in place; guard new backends behind nil-checks.
 - Drain-failure alerts: `shouldNotifyDrainFailure(key, throttleMap)` + `formatDrainFailureAlert` (failure_alerts.go); throttles per (strategy, platform, symbol, direction).
 - Sharpe: per-strategy + book-level annualized; rendered in leaderboard col + `Book Sharpe` footer. `RiskFreeRate` baseline from config (explicit 0 respected). Strategy-interval speedup: when DD > `warn_threshold_pct`, returns `strategyDrawdownFastIntervalSeconds`.
 - Adding a per-strategy config flag: (1) field on `StrategyConfig`, (2) main.go `run*Check` appends CLI flag, (3) parse in each Python check script, (4) `InitOptions` + wizard + `generateConfig`.
@@ -84,6 +85,7 @@
 ## Build & Deploy
 - Build: `cd scheduler && /opt/homebrew/bin/go build -o ../go-trader .` — always rebuild before smoke-testing.
 - Restart: `systemctl restart go-trader`. Service file changes: `systemctl daemon-reload && systemctl restart go-trader`.
+- Config-only changes (no rebuild needed): `kill -HUP $(pgrep go-trader)` — `config_reload.go` re-reads `cfg.ConfigPath` without dropping state or sessions.
 - Python script changes: take effect next scheduler cycle (no rebuild).
 
 ## Backtest

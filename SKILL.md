@@ -347,11 +347,14 @@ Use `.venv/bin/python3` for all backtests.
 
 ## Reconfiguration
 
-After edits to `scheduler/config.json`, restart:
+After edits to `scheduler/config.json`, either hot-reload (preferred when the change is in the supported subset) or restart:
 
 ```bash
-sudo systemctl restart go-trader
+sudo systemctl kill -s HUP go-trader   # hot reload (no state loss)
+sudo systemctl restart go-trader       # full restart
 ```
+
+Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, auto-update mode, Discord/Telegram channel maps and tokens. It refuses if the strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed, and refuses per-strategy `leverage` changes while positions are open. Logs report the applied diff and any rejection reason; on rejection, fall back to a full restart. The status server reflects the new port immediately.
 
 Common changes:
 

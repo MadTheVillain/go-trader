@@ -382,7 +382,8 @@ Closes sold options early based on profit target, stop loss, or approaching expi
 |--------|--------|
 | Go code (`scheduler/*.go`) | `VER=$(git describe --tags --always --dirty); cd scheduler && go build -ldflags "-X main.Version=$VER" -o ../go-trader . && systemctl restart go-trader` |
 | Python scripts | `systemctl restart go-trader` (or wait for next cycle) |
-| Config changes | `systemctl restart go-trader` |
+| Config changes (hot-reloadable subset) | `systemctl kill -s HUP go-trader` — applies capital/drawdown/intervals/params/risk knobs/channels in place; logs rejection if the change isn't reload-safe |
+| Config changes (roster, script/args/type/platform, leverage with open positions) | `systemctl restart go-trader` |
 | Service file changes | `systemctl daemon-reload && systemctl restart go-trader` |
 
 ---
@@ -396,7 +397,7 @@ curl -s localhost:8099/health            # simple health check
 journalctl -u go-trader -n 50           # recent logs
 ```
 
-Discord strategy summaries include columns: `Init | Value | PnL | PnL% | Max DD | Wallet% | Tf | Int | #T | W/L`, a `Book Sharpe (realized, annualized)` footer line, and the go-trader version in the summary title. The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels.
+Discord strategy summaries include columns: `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` (compact widths; DD rendered as whole percent), a `Book Sharpe (realized, annualized)` footer line, and the go-trader version in the summary title. The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels.
 
 ---
 
@@ -410,6 +411,28 @@ Discord strategy summaries include columns: `Init | Value | PnL | PnL% | Max DD 
 - **Spot**: max 95% capital per position
 - **Options**: max 4 positions per strategy, portfolio-aware scoring
 - **Theta harvesting**: configurable early exit on sold options
+
+---
+
+## TradingView Export
+
+Export recorded SQLite trades to a TradingView portfolio-import CSV (`Symbol,Side,Qty,Status,Fill Price,Commission,Closing Time`):
+
+```bash
+./go-trader export tradingview --strategy hl-btc-momentum --output tv-hl-btc.csv
+./go-trader export tradingview --strategy hl-btc-momentum --strategy okx-eth-breakout --output tv-selected.csv
+./go-trader export tradingview --all --output tv-all.csv
+```
+
+Built-in mappings cover known OKX and BinanceUS pairs. For platforms/symbols without a safe default, set per-symbol overrides in config:
+
+```json
+"tradingview_export": {
+  "symbol_overrides": { "hl:BTC": "BYBIT:BTCUSDT" }
+}
+```
+
+Circuit-breaker close trades are included; their direction is parsed from the trade's `Details` field ("Close long" → sell, "Close short" → buy).
 
 ---
 
