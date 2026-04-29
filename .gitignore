@@ -15,6 +15,7 @@ scheduler/state.json
 scheduler/state.db
 .worktrees/
 .claude/
+local/
 
 # macOS
 .DS_Store
