@@ -397,7 +397,7 @@ curl -s localhost:8099/health            # simple health check
 journalctl -u go-trader -n 50           # recent logs
 ```
 
-Discord strategy summaries include columns: `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` (compact widths; DD rendered as whole percent), a `Book Sharpe (realized, annualized)` footer line, and the go-trader version in the summary title. The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels. `#T` and `W/L` are derived from the lifetime trades table (round-trip closes), so they survive restarts and reconciliation paths that bypass in-memory counters (#460).
+Discord strategy summaries include columns: `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` (compact widths; DD rendered as whole percent), a `Book Sharpe (realized, annualized)` footer line, and the go-trader version + PID in the summary title (CI builds stamp the version via `git describe --tags --always --dirty` ldflags so released binaries no longer report `dev`, #465). The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels. `#T` and `W/L` are derived from the lifetime trades table (round-trip closes), so they survive restarts and reconciliation paths that bypass in-memory counters (#460).
 
 ---
 

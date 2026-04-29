@@ -571,6 +571,8 @@ Do not confuse this with the portfolio kill switch. Portfolio kill switch is por
 
 Kill-switch auto-reset: once the portfolio kill switch confirms all platforms are flat (`OnChainConfirmedFlat=true`), the next cycle clears virtual state and resumes trading. The bot posts `Virtual state cleared. Kill switch auto-reset; trading will resume next cycle.`
 
+When multiple HL strategies trade the same coin on a shared wallet, the on-chain close fill is split across strategies by their **virtual quantity at snapshot time** (taken under RLock before the close mutates state), not by capital weight (#469). Trade and ClosedPosition rows therefore reflect each strategy's actual share of the fill, and a misconfigured caller whose strategy isn't among the peers receives `0, 0` rather than the entire portfolio fill.
+
 Portfolio drawdown warnings repeat every cycle while drawdown remains in the warn band (`portfolio_risk.warn_threshold_pct`, default 60% of kill-switch). Silence by resolving the drawdown or changing the threshold.
 
 Drain/live-exec failure alerts: repeated `DRAIN FAILURE` or `EXEC FAILURE` alerts mean a CB drain or live order failed. Check:
