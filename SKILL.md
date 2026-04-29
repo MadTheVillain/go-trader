@@ -97,7 +97,7 @@ Manual config rules:
 - Strategy entries need `id`, `type`, `script`, `args`, `capital`, `max_drawdown_pct`, and `interval_seconds`.
 - `StrategyConfig.Params` is a JSON object of parameter overrides; runtime params such as funding rates take priority.
 - `discord.channels` and `telegram.channels` are maps keyed by platform/type: `spot`, `options`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`, plus optional paper keys such as `okx-paper`.
-- `summary_frequency` is a map keyed like channels. Values: `hourly`, `daily`, `every`, `per_check`, `always`, or Go durations such as `30m`, `2h`.
+- `summary_frequency` is a map keyed like channels. Values: `hourly`, `daily`, `every`, `per_check`, `always`, or Go durations such as `30m`, `2h`. Cadence is wall-clock based and persisted in SQLite (`app_state.last_summary_post`), so restarts and SIGHUP reloads keep the throttle window intact.
 - Trades always force an immediate summary post regardless of cadence.
 - `discord.owner_id` can be set with `DISCORD_OWNER_ID`; this enables DM upgrade prompts and migration prompts.
 
@@ -595,6 +595,8 @@ journalctl -u go-trader -n 100 | grep "liveExec\|drain"
 - Sort map keys before formatting operator-facing or test-asserted output.
 - Add notification behavior through `MultiNotifier`.
 - Native Go mark fetchers expose base URLs as vars for httptest stubs.
+- Lifetime trade stats (`#T` / `W/L`) come exclusively from the SQLite `trades` table, grouped per `(strategy_id, position_id)` so partial closes collapse into one round trip (#471, #472). New trade-recording paths must populate `Trade.PositionID` (or rely on `RecordTrade`'s lookup against `s.Positions` / `s.OptionPositions`).
+- Summary cadence is wall-clock and per-channel; if you add a new code path that posts summaries, thread `lastSummaryPost map[string]time.Time` and pass it to `ShouldPostSummary(freq, continuous, hasTrades, lastPost, now)`.
 
 Useful audits:
 

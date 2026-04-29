@@ -311,10 +311,12 @@ Control how often each channel posts a summary via the top-level `summary_freque
 | Value | Behavior |
 |-------|----------|
 | `"every"` / `"per_check"` / `"always"` | Post every scheduler cycle |
-| `"hourly"` | Post once per hour |
-| `"daily"` | Post once per day |
-| `"30m"`, `"2h"`, etc. | Post every N minutes/hours (Go duration syntax) |
-| `""` (omitted) | Legacy default — options/perps/futures post every cycle; spot posts hourly |
+| `"hourly"` | Post once per hour (wall-clock) |
+| `"daily"` | Post once per day (wall-clock) |
+| `"30m"`, `"2h"`, etc. | Post when this much wall-clock time has elapsed since the last post (Go duration syntax) |
+| `""` (omitted) | Legacy default — options/perps/futures post every channel run; spot posts hourly |
+
+Cadence is wall-clock based and survives restarts: per-channel last-post timestamps are persisted in SQLite (`app_state.last_summary_post`), so variable scheduler wake-ups and SIGHUP reloads no longer reset the throttle window (#474).
 
 ### Strategy Entry
 
@@ -397,7 +399,7 @@ curl -s localhost:8099/health            # simple health check
 journalctl -u go-trader -n 50           # recent logs
 ```
 
-Discord strategy summaries include columns: `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` (compact widths; DD rendered as whole percent), a `Book Sharpe (realized, annualized)` footer line, and the go-trader version + PID in the summary title (CI builds stamp the version via `git describe --tags --always --dirty` ldflags so released binaries no longer report `dev`, #465). The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels. `#T` and `W/L` are derived from the lifetime trades table (round-trip closes), so they survive restarts and reconciliation paths that bypass in-memory counters (#460).
+Discord strategy summaries include columns: `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` (compact widths; DD rendered as whole percent), a `Book Sharpe (realized, annualized)` footer line, and the go-trader version + PID in the summary title (CI builds stamp the version via `git describe --tags --always --dirty` ldflags so released binaries no longer report `dev`, #465). The `okx-options` and `robinhood-options` channel keys route OKX/Robinhood options summaries separately from their spot/perps channels. `#T` and `W/L` are derived from the lifetime trades table — close legs are grouped per position so partial closes collapse into one round trip (#471), and the in-memory `RiskState` counters have been removed so SQLite is the only source of truth (#472).
 
 ---
 
