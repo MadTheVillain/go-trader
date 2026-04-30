@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -414,6 +415,105 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// hyperliquidPeerStrategyErrors returns validation messages for HL perps
+// strategies that share a coin but disagree on MarginMode, Leverage, or
+// StopLossPct (#491). Returns an empty slice when no peer conflicts exist.
+//
+// HL aggregates positions per coin per account, so two go-trader strategies
+// on the same coin share an on-chain position, margin assignment, and
+// reduce-only stop-loss slots. Mismatched leverage/margin would either fail
+// at first peer trade (HL rejects mode changes on an open position) or
+// silently land in the wrong mode; conflicting stop-loss triggers race on
+// a single position. Per-strategy bookkeeping in SQLite keeps the legs
+// separated when peers agree, so this validation is the only thing
+// preventing a foot-gun config.
+//
+// Sub-account isolation is the only correct path for full per-strategy
+// independence (different direction, leverage, margin); it is intentionally
+// out of scope here and tracked separately.
+//
+// Note: AllowShorts mismatches across peers on the same coin are NOT
+// validated here. A long-only and a short-allowed strategy on the same HL
+// coin would silently net/flip at the position level — directional
+// independence requires HL sub-accounts (out of scope for #491).
+func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
+	type peer struct {
+		ID          string
+		Coin        string
+		MarginMode  string
+		Leverage    float64
+		StopLossPct float64
+	}
+	groups := make(map[string][]peer)
+	for _, sc := range strategies {
+		if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+			continue
+		}
+		coin := hyperliquidSymbol(sc.Args)
+		if coin == "" {
+			continue
+		}
+		groups[coin] = append(groups[coin], peer{
+			ID:          sc.ID,
+			Coin:        coin,
+			MarginMode:  sc.MarginMode,
+			Leverage:    sc.Leverage,
+			StopLossPct: sc.StopLossPct,
+		})
+	}
+	var errs []string
+	coins := make([]string, 0, len(groups))
+	for coin := range groups {
+		coins = append(coins, coin)
+	}
+	sort.Strings(coins)
+	for _, coin := range coins {
+		peers := groups[coin]
+		if len(peers) < 2 {
+			continue
+		}
+		// Sort peers by ID so `base` (the comparison reference) is deterministic;
+		// any mismatch still triggers regardless of base, but a stable base lets
+		// future "report which peer is the outlier" extensions stay reproducible.
+		sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
+		ids := make([]string, len(peers))
+		for i, p := range peers {
+			ids[i] = p.ID
+		}
+		idList := strings.Join(ids, ", ")
+		base := peers[0]
+		for _, p := range peers[1:] {
+			if p.MarginMode != base.MarginMode {
+				errs = append(errs, fmt.Sprintf(
+					"hyperliquid peers on %s disagree on margin_mode (strategies %s): HL aggregates per coin per account, all peers must share margin_mode",
+					coin, idList))
+				break
+			}
+		}
+		for _, p := range peers[1:] {
+			if p.Leverage != base.Leverage {
+				errs = append(errs, fmt.Sprintf(
+					"hyperliquid peers on %s disagree on leverage (strategies %s): HL aggregates per coin per account, all peers must share leverage",
+					coin, idList))
+				break
+			}
+		}
+		stopLossOwners := make([]string, 0)
+		for _, p := range peers {
+			if p.StopLossPct > 0 {
+				stopLossOwners = append(stopLossOwners, p.ID)
+			}
+		}
+		if len(stopLossOwners) > 1 {
+			sort.Strings(stopLossOwners)
+			errs = append(errs, fmt.Sprintf(
+				"hyperliquid peers on %s have conflicting stop_loss_pct (strategies %s): at most one peer may place a reduce-only SL trigger; the others' OIDs would race on the shared on-chain position",
+				coin, strings.Join(stopLossOwners, ", ")))
+		}
+	}
+	return errs
+}
+
 // ParseLeaderboardPostTime parses a "HH:MM" string and returns (hour, minute, ok).
 func ParseLeaderboardPostTime(s string) (int, int, bool) {
 	if s == "" {
@@ -703,6 +803,16 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("%s: theta_harvest.min_dte_close must be >= 0", prefix))
 			}
 		}
+	}
+
+	// #491: Two HL perps strategies on the same coin land on a single on-chain
+	// position (HL nets per coin per account). Peer strategies must agree on
+	// MarginMode and Leverage, and at most one peer may carry a per-trade
+	// stop-loss — otherwise reduce-only triggers placed by both peers will
+	// race on the shared position. Validate up front instead of failing at
+	// first trade.
+	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
 	}
 
 	// #42: Validate portfolio risk config.
