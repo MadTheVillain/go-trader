@@ -19,7 +19,7 @@ import traceback
 from datetime import datetime, timezone
 
 # Add parent dirs to path so we can import from strategies/ and core/
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'spot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 
@@ -106,21 +106,31 @@ def main():
     symbol_b = positional_args[3] if len(positional_args) >= 4 else None
 
     try:
-        from strategies import apply_strategy, get_strategy
+        from strategies import apply_strategy, get_strategy, list_strategies
+        from close_registry_loader import (
+            evaluate as close_evaluate,
+            get_strategy as get_close_strategy,
+            list_strategies as list_close_strategies,
+        )
         from data_fetcher import fetch_ohlcv
         from strategy_composition import (
             evaluate_open_close,
             finalize_decision,
             normalize_signal,
             parse_close_strategies,
+            validate_close_strategy_names,
         )
 
         configured_names = [open_strategy or strategy_name]
-        configured_names.extend(parse_close_strategies(close_strategies_raw))
-        if not close_strategies_raw and open_close_enabled:
-            configured_names.append(open_strategy or strategy_name)
         for name in configured_names:
             get_strategy(name)
+        validate_close_strategy_names(
+            parse_close_strategies(close_strategies_raw),
+            get_strategy,
+            get_close_strategy,
+            list_strategies,
+            list_close_strategies,
+        )
 
         # Warn when pairs_spread will degrade due to missing secondary symbol
         needs_pair = "pairs_spread" in configured_names
@@ -171,6 +181,7 @@ def main():
 
         decision = None
         if open_close_enabled:
+            market_ctx = {"mark_price": float(df["close"].iloc[-1])}
             evaluation = evaluate_open_close(
                 apply_strategy,
                 get_strategy,
@@ -181,6 +192,8 @@ def main():
                 position_side,
                 strategy_params,
                 position_ctx,
+                close_evaluate=close_evaluate,
+                market_ctx=market_ctx,
             )
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal
