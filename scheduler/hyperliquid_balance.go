@@ -294,6 +294,7 @@ func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positi
 		// close_reason != 'hl_sync_external' to avoid biased aggregates.
 		recordClosedPosition(stratState, statePos, 0, 0, "hl_sync_external", time.Now().UTC())
 		delete(stratState.Positions, sym)
+		clearATRMultMissingEntryATRWarningOnHLPerpsClose(stratState, sym)
 		changed = true
 	}
 	// If on-chain exists but NOT in this strategy's state, we skip it —
@@ -1283,6 +1284,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		// right amount. delete() runs after the snapshot.
 		recordClosedPosition(s, pos, fillPx, pnl, "circuit_breaker", now)
 		delete(s.Positions, symbol)
+		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 	} else {
 		pos.Quantity = remaining
 	}
