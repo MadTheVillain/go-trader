@@ -206,25 +206,53 @@ type StrategyConfig struct {
 	HTFFilter            bool                   `json:"htf_filter,omitempty"`           // higher-timeframe trend filter
 	AllowShorts          bool                   `json:"allow_shorts,omitempty"`         // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
 	Leverage             float64                `json:"leverage,omitempty"`             // perps leverage multiplier (default 1 = no leverage); used for notional sizing and margin-based valuation (#254)
-	StopLossPct          float64                `json:"stop_loss_pct,omitempty"`        // HL perps only: % from entry to place a reduce-only stop-loss trigger (0 = disabled) (#412)
-	StopLossMarginPct    float64                `json:"stop_loss_margin_pct,omitempty"` // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time (#487)
+	StopLossPct          *float64               `json:"stop_loss_pct,omitempty"`        // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct (#484); explicit 0 disables auto-SL (#412)
+	StopLossMarginPct    *float64               `json:"stop_loss_margin_pct,omitempty"` // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct; explicit 0 disables (#487, #484)
 	MarginMode           string                 `json:"margin_mode,omitempty"`          // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
 	Params               map[string]interface{} `json:"params,omitempty"`               // custom strategy parameters passed to Python
 	ThetaHarvest         *ThetaHarvestConfig    `json:"theta_harvest,omitempty"`
 	FuturesConfig        *FuturesConfig         `json:"futures,omitempty"`
 }
 
+// MaxAutoStopLossPct caps the auto-derived per-trade stop at 50% to mirror the
+// hand-edited bound enforced on StopLossPct (#421). MaxDrawdownPct can default
+// to 50–60 across platforms; using it raw as a price stop would land triggers
+// at entry×0 / entry×2 on long/short legs.
+const MaxAutoStopLossPct = 50.0
+
 // EffectiveStopLossPct returns the price % to use as the HL reduce-only stop-loss
-// trigger for a given strategy. Returns the explicit StopLossPct when set;
-// otherwise derives it from StopLossMarginPct / Leverage so margin-loss-based
-// triggers stay correct as leverage changes (#487). Returns 0 when neither is
-// configured or when leverage is missing/invalid for the margin-pct path.
+// trigger for a given strategy. Resolution order (#484):
+//  1. Explicit StopLossPct (nil → fall through; explicit 0 → disabled).
+//  2. StopLossMarginPct / Leverage (nil → fall through; explicit 0 → disabled).
+//  3. MaxDrawdownPct as a fallback so any HL perps strategy with a configured
+//     drawdown automatically gets exchange-side protection. Capped at
+//     MaxAutoStopLossPct.
+//
+// HL perps only — returns 0 for non-HL platforms or non-perps types so the
+// caller can skip the trigger placement unconditionally.
 func EffectiveStopLossPct(sc StrategyConfig) float64 {
-	if sc.StopLossPct > 0 {
-		return sc.StopLossPct
+	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+		return 0
 	}
-	if sc.StopLossMarginPct > 0 && sc.Leverage > 0 {
-		return sc.StopLossMarginPct / sc.Leverage
+	if sc.StopLossPct != nil {
+		// Explicit value (including 0 = disabled) wins.
+		if *sc.StopLossPct > 0 {
+			return *sc.StopLossPct
+		}
+		return 0
+	}
+	if sc.StopLossMarginPct != nil {
+		if *sc.StopLossMarginPct > 0 && sc.Leverage > 0 {
+			return *sc.StopLossMarginPct / sc.Leverage
+		}
+		return 0
+	}
+	if sc.MaxDrawdownPct > 0 {
+		fallback := sc.MaxDrawdownPct
+		if fallback > MaxAutoStopLossPct {
+			fallback = MaxAutoStopLossPct
+		}
+		return fallback
 	}
 	return 0
 }
@@ -438,11 +466,11 @@ func LoadConfig(path string) (*Config, error) {
 // independence requires HL sub-accounts (out of scope for #491).
 func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	type peer struct {
-		ID          string
-		Coin        string
-		MarginMode  string
-		Leverage    float64
-		StopLossPct float64
+		ID             string
+		Coin           string
+		MarginMode     string
+		Leverage       float64
+		EffectiveSLPct float64 // resolved via EffectiveStopLossPct: nil→auto from MaxDrawdownPct, 0→disabled, >0→explicit
 	}
 	groups := make(map[string][]peer)
 	for _, sc := range strategies {
@@ -454,11 +482,11 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 			continue
 		}
 		groups[coin] = append(groups[coin], peer{
-			ID:          sc.ID,
-			Coin:        coin,
-			MarginMode:  sc.MarginMode,
-			Leverage:    sc.Leverage,
-			StopLossPct: sc.StopLossPct,
+			ID:             sc.ID,
+			Coin:           coin,
+			MarginMode:     sc.MarginMode,
+			Leverage:       sc.Leverage,
+			EffectiveSLPct: EffectiveStopLossPct(sc),
 		})
 	}
 	var errs []string
@@ -500,7 +528,7 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 		}
 		stopLossOwners := make([]string, 0)
 		for _, p := range peers {
-			if p.StopLossPct > 0 {
+			if p.EffectiveSLPct > 0 {
 				stopLossOwners = append(stopLossOwners, p.ID)
 			}
 		}
@@ -754,10 +782,13 @@ func ValidateConfig(cfg *Config) error {
 		// #421: bound-check stop_loss_pct to mirror the init wizard's range.
 		// A hand-edited config with stop_loss_pct=200 would otherwise silently
 		// place an SL at $0 (long) or 3× entry (short) — both never trigger,
-		// breaking the safety feature without any warning.
-		if sc.StopLossPct != 0 {
-			if sc.StopLossPct < 0 || sc.StopLossPct > 50 {
-				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct must be in [0, 50], got %g", prefix, sc.StopLossPct))
+		// breaking the safety feature without any warning. Pointer-aware (#484):
+		// nil means the field was omitted (auto-SL falls through to margin/DD);
+		// explicit 0 means the operator opted out and is allowed.
+		if sc.StopLossPct != nil {
+			pct := *sc.StopLossPct
+			if pct < 0 || pct > 50 {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct must be in [0, 50], got %g", prefix, pct))
 			}
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
@@ -767,12 +798,17 @@ func ValidateConfig(cfg *Config) error {
 		// #487: stop_loss_margin_pct expresses the trigger as a % of deployed
 		// margin (leverage-aware) and is converted to a price % at order time.
 		// Mutually exclusive with stop_loss_pct so the operator can't double up.
-		if sc.StopLossMarginPct != 0 {
-			if sc.StopLossPct != 0 {
-				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct and stop_loss_margin_pct are mutually exclusive — set only one", prefix))
+		// Pointer-aware (#484): same explicit-vs-omitted distinction. The
+		// mutual-exclusion check fires only when at least one field is
+		// non-zero; both = 0 is benign (both mean "disabled" — neither
+		// places a trigger at runtime, so there is nothing to conflict).
+		if sc.StopLossMarginPct != nil {
+			marginPct := *sc.StopLossMarginPct
+			if sc.StopLossPct != nil && (*sc.StopLossPct > 0 || marginPct > 0) {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_pct and stop_loss_margin_pct are mutually exclusive — set only one (note: stop_loss_pct=0 counts as \"set\" and explicitly disables the auto-SL; remove the field entirely to fall through to stop_loss_margin_pct)", prefix))
 			}
-			if sc.StopLossMarginPct <= 0 || sc.StopLossMarginPct > 100 {
-				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct must be in (0, 100], got %g", prefix, sc.StopLossMarginPct))
+			if marginPct < 0 || marginPct > 100 {
+				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct must be in [0, 100], got %g", prefix, marginPct))
 			}
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
@@ -780,13 +816,16 @@ func ValidateConfig(cfg *Config) error {
 			// Mirror the #421 [0, 50] cap on the *derived* price stop so a
 			// hand-edited config like {StopLossMarginPct: 80, Leverage: 1}
 			// can't pass validation and silently land an HL trigger at
-			// entry×0 (long) or entry×1.8 (short).
-			lev := sc.Leverage
-			if lev < 1 {
-				lev = 1
-			}
-			if derived := sc.StopLossMarginPct / lev; derived > 50 {
-				errs = append(errs, fmt.Sprintf("%s: derived stop-loss price %% (stop_loss_margin_pct / leverage = %g) must be <= 50; lower stop_loss_margin_pct or raise leverage", prefix, derived))
+			// entry×0 (long) or entry×1.8 (short). Skip when explicitly 0
+			// (disabled) — derived stop is also 0.
+			if marginPct > 0 {
+				lev := sc.Leverage
+				if lev < 1 {
+					lev = 1
+				}
+				if derived := marginPct / lev; derived > 50 {
+					errs = append(errs, fmt.Sprintf("%s: derived stop-loss price %% (stop_loss_margin_pct / leverage = %g) must be <= 50; lower stop_loss_margin_pct or raise leverage", prefix, derived))
+				}
 			}
 		}
 
