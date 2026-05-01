@@ -1040,9 +1040,15 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 	return lines
 }
 
+// isTradeCloseDetails returns true when Details describes closing (full or partial).
+// Matching is case-insensitive so strings like "Partial-close long …" classify as closes (#530).
+func isTradeCloseDetails(details string) bool {
+	return strings.Contains(strings.ToLower(details), "close")
+}
+
 // FormatTradeDM formats a Trade into a concise DM message for the bot owner.
 func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
-	isClose := strings.Contains(trade.Details, "Close")
+	isClose := isTradeCloseDetails(trade.Details)
 
 	icon := "🟢"
 	header := "TRADE EXECUTED"
