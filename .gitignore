@@ -7,7 +7,7 @@ trading_bot.db
 .env
 trading-scheduler
 # Compiled binaries
-/go-trader
+go-trader
 logs/
 .venv/
 scheduler/config.json
