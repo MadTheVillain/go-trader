@@ -6,7 +6,6 @@ import pathlib
 
 import pandas as pd
 import numpy as np
-import pytest
 
 spec = importlib.util.spec_from_file_location(
     "atr", pathlib.Path(__file__).parent / "atr.py"
