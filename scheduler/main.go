@@ -1208,6 +1208,13 @@ func main() {
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, logger); ok {
 								prices[result.Symbol] = price
+								if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, okxPosQty) {
+									logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
+									result.Signal = 0
+								}
+								mu.Lock()
+								stratState.Regime = result.Regime
+								mu.Unlock()
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
@@ -1226,6 +1233,13 @@ func main() {
 						} else if sc.Platform == "robinhood" {
 							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, logger); ok {
 								prices[result.Symbol] = price
+								if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, rhPosQty) {
+									logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
+									result.Signal = 0
+								}
+								mu.Lock()
+								stratState.Regime = result.Regime
+								mu.Unlock()
 								var execResult *RobinhoodExecuteResult
 								liveExecFailed := false
 								if robinhoodIsLive(sc.Args) && result.Signal != 0 {
@@ -1242,7 +1256,12 @@ func main() {
 								}
 							}
 						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, logger); ok {
+							if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, spotPosCtx.Quantity) {
+								logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
+								result.Signal = 0
+							}
 							mu.Lock()
+							stratState.Regime = result.Regime
 							trades, detail = executeSpotResult(sc, stratState, result, signalStr, price, logger)
 							mu.Unlock()
 						}
@@ -1261,6 +1280,13 @@ func main() {
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, logger); ok {
 								prices[result.Symbol] = price
+								if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, okxPosQty) {
+									logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
+									result.Signal = 0
+								}
+								mu.Lock()
+								stratState.Regime = result.Regime
+								mu.Unlock()
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
@@ -1278,6 +1304,13 @@ func main() {
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(sc, prices, hlPosCtx, logger); ok {
 							prices[result.Symbol] = price
+							if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, hlPosQty) {
+								logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
+								result.Signal = 0
+							}
+							mu.Lock()
+							stratState.Regime = result.Regime
+							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
 							hlPosSnapshot := &Position{AvgCost: hlAvgCost, EntryATR: hlEntryATR}
@@ -1377,6 +1410,13 @@ func main() {
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, logger); ok {
 							prices[result.Symbol] = price
+							if regimeBlocksOpen(sc.AllowedRegimes, result.Regime, tsContracts) {
+								logger.Info("Regime gate: open signal blocked (regime=%s)", result.Regime)
+								result.Signal = 0
+							}
+							mu.Lock()
+							stratState.Regime = result.Regime
+							mu.Unlock()
 							var execResult *TopStepExecuteResult
 							liveExecFailed := false
 							if topstepIsLive(sc.Args) && result.Signal != 0 {
