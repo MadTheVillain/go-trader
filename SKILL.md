@@ -249,9 +249,9 @@ Use the commit message and PR number to classify. When in doubt, treat as runtim
 
 | Category | Examples |
 | --- | --- |
-| Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); silent field drop without version bump (e.g. `disable_implicit_close` removed in #508 — if set in config it no-ops; any strategy that had it `true` with no `close_strategies` now uses the open strategy as implicit close instead) |
+| Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); v11 no-op bump (#546 — defaults preserve legacy behavior, no JSON rewrite needed); silent field drop without version bump (e.g. `disable_implicit_close` removed in #508 — if set in config it no-ops; any strategy that had it `true` with no `close_strategies` now uses the open strategy as implicit close instead) |
 | Runtime default | HL stop-loss auto-derive (#493), HL margin mode default isolated (#486), peer normalization across all four HL stop/trailing omission fields (#494/#507); HL perps shared-coin CB drain (#515): pending clears **without** on-chain HL close when peers share the coin — operators who expected CB to flatten the whole HL leg must be told explicitly; ATR(14) auto-injected into all check-script indicator payloads + new MISSING ENTRY ATR notifier when `tiered_tp_atr` is configured but the open candle didn't produce ATR (#525); HL perps paper mode now evaluates `trailing_stop_pct` / `trailing_stop_atr_mult` and books synthetic closes when mark crosses the trigger — paper strategies with trailing configured will start firing closes that were previously silently ignored (#532) |
-| Opt-in field | `%` trailing stop (#502), ATR-derived trailing via `trailing_stop_atr_mult` (#507 — entry path must populate `Position.EntryATR`; initial trigger deferred one cycle); open/close composition (#483), `stop_loss_margin_pct` (#490), `margin_per_trade_usd` (#520 — margin-based sizing, purely additive); `tiered_tp_atr_live` close evaluator (#527 — live ATR recomputed per tick from `market_ctx["atr"]`, `atr_source` param `"live"` default / `"entry"`, falls back to entry ATR on warm-up) |
+| Opt-in field | `%` trailing stop (#502), ATR-derived trailing via `trailing_stop_atr_mult` (#507 — entry path must populate `Position.EntryATR`; initial trigger deferred one cycle); open/close composition (#483), `stop_loss_margin_pct` (#490), `margin_per_trade_usd` (#520 — margin-based sizing, purely additive); `tiered_tp_atr_live` close evaluator (#527 — live ATR recomputed per tick from `market_ctx["atr"]`, `atr_source` param `"live"` default / `"entry"`, falls back to entry ATR on warm-up); regime detection `regime.enabled` + per-strategy `allowed_regimes` (#541/#546/#558 — all opt-in, default behavior unchanged; requires `regime.enabled=true` in global config before any per-strategy gate fires; `Trade.Regime` column added to `trades` table on first start after update) |
 | Internal / no ops impact | Discord summary strategy column truncation/aliases (#514); Python registry split into `open/registry.py` + `close/registry.py` (#511) — same checklist, different paths already documented elsewhere; `close_fraction` honored in execution (#521 — previously partial-close tiers silently closed 100%; existing `close_strategies` configs now behave as specified); Discord position lines now show SL whenever `stop_loss_trigger_px` is set (no longer requires `stop_loss_oid`) and append TP1/TP2 hints (1× / 2× entry ATR from avg cost) for `tiered_tp_atr` / `tiered_tp_atr_live` (#528/#529); partial-close trade DMs now classify as `TRADE CLOSED` via case-insensitive substring (#530/#531); backtester now exercises the close registry via `--close-strategy` / `--close-params` with bar-level granularity (#535 — does not simulate live intra-bar trigger races) |
 | Open-position constraint | `margin_mode`, exchange `leverage`, kill-switch identity changes; HL `trailing_stop_atr_mult` nil↔positive mode toggle mirrors `%` trailing (#507 hot-reload compat) |
 
@@ -363,11 +363,12 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
 3. ADJUSTABLE SETTINGS
    Global: interval_seconds, db_file, auto_update, status_port,
      max_drawdown_pct, portfolio_risk.warn_threshold_pct,
-     notional_cap_usd, risk_free_rate, correlation.*, summary_frequency
+     notional_cap_usd, risk_free_rate, correlation.*, summary_frequency,
+     regime.enabled, regime.period, regime.adx_threshold
    Per-strategy: capital, max_drawdown_pct, interval_seconds, htf_filter,
      params, leverage, sizing_leverage, margin_per_trade_usd, stop_loss_pct, stop_loss_margin_pct,
      trailing_stop_pct, trailing_stop_atr_mult, trailing_stop_min_move_pct,
-     margin_mode, allow_shorts, open_strategy, close_strategies, theta_harvest.*
+     margin_mode, allow_shorts, open_strategy, close_strategies, allowed_regimes, theta_harvest.*
    Discord/Telegram: enabled, channels, dm_channels, owner_id
    Environment: Discord token, status token, exchange credentials
 
@@ -403,6 +404,10 @@ Use `.venv/bin/python3` for all backtests.
 .venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
   --close-strategy tiered_tp_atr --close-params '{"tiered_tp_atr":{"tp1_mult":1,"tp2_mult":2}}'
 
+# Run with regime gate (#549) — blocks entries outside allowed regimes, closes always execute
+.venv/bin/python3 backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
+  --regime-enabled --regime-period 14 --regime-adx-threshold 20 --allowed-regimes trending_up trending_down
+
 .venv/bin/python3 backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
 .venv/bin/python3 backtest/backtest_options.py --underlying BTC --since 90 --capital 10000 --verbose
 .venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
@@ -419,7 +424,7 @@ sudo systemctl kill -s HUP go-trader   # hot reload (no state loss)
 sudo systemctl restart go-trader       # full restart
 ```
 
-Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss (including `%`/ATR-mult trailing knobs), sizing leverage, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, auto-update mode, Discord/Telegram channel maps and tokens. It refuses if the strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed, and refuses per-strategy exchange `leverage` or HL `margin_mode` changes while positions are open. It also re-runs the HL perps peer-on-same-coin check (`margin_mode`/exchange `leverage` must agree; at most one peer with ownership across `stop_loss_pct`, `stop_loss_margin_pct`, `trailing_stop_pct`, `trailing_stop_atr_mult`). Logs report the applied diff and any rejection reason; on rejection, fall back to a full restart. The status server reflects the new port immediately.
+Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss (including `%`/ATR-mult trailing knobs), sizing leverage, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, `allowed_regimes` per-strategy, auto-update mode, Discord/Telegram channel maps and tokens. It refuses if the strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed, and refuses per-strategy exchange `leverage` or HL `margin_mode` changes while positions are open. Changes to the global `regime` block (enabled/period/adx_threshold) require a full restart (mirrors `correlation`). It also re-runs the HL perps peer-on-same-coin check (`margin_mode`/exchange `leverage` must agree; at most one peer with ownership across `stop_loss_pct`, `stop_loss_margin_pct`, `trailing_stop_pct`, `trailing_stop_atr_mult`). Logs report the applied diff and any rejection reason; on rejection, fall back to a full restart. The status server reflects the new port immediately.
 
 Common changes:
 
@@ -451,6 +456,7 @@ Global config keys:
 | Portfolio warn threshold | `portfolio_risk.warn_threshold_pct` | 60 |
 | Correlation tracking | `correlation.*` | disabled |
 | Summary cadence | `summary_frequency` | legacy defaults |
+| Regime detection | `regime.enabled`, `regime.period`, `regime.adx_threshold` | disabled; period=14, threshold=20 when enabled |
 
 Per-strategy keys:
 
@@ -473,6 +479,7 @@ Per-strategy keys:
 | Margin mode | `margin_mode` | Hyperliquid perps only, `isolated` (default) or `cross`. Applied from flat. |
 | Open strategy | `open_strategy` | Override entry strategy name (otherwise from `args[0]`) |
 | Close strategies | `close_strategies` | Ordered list of exit evaluators; max `close_fraction` wins |
+| Regime gate | `allowed_regimes` | List of regime labels that allow new entries (`trending_up`, `trending_down`, `ranging`); empty = allow all; requires `regime.enabled=true` globally; not supported on type=options |
 | Theta harvest | `theta_harvest.*` | Options early-exit controls |
 
 Discord/Telegram keys:
@@ -489,6 +496,14 @@ Correlation tracking:
 - `correlation.max_same_direction_pct`, default 75
 
 When enabled, correlation warnings go to all active channels and owner DM, and the snapshot appears in `/status`.
+
+Regime detection (global opt-in):
+
+- `regime.enabled` — must be `true` for any per-strategy `allowed_regimes` gate to fire
+- `regime.period` — ADX lookback (Wilder's smoothing), default 14
+- `regime.adx_threshold` — ADX below this is "ranging", default 20.0
+
+Valid regime labels: `trending_up`, `trending_down`, `ranging`. `AllowedRegimes` per-strategy is SIGHUP-compatible; changing the global `regime` block requires a full restart. Not supported on type=options strategies.
 
 ---
 
