@@ -250,8 +250,8 @@ Use the commit message and PR number to classify. When in doubt, treat as runtim
 | Category | Examples |
 | --- | --- |
 | Auto-migration | `config_version` bump, deprecated field removal, silent field copy (e.g. v10 `sizing_leverage` ← `leverage`); v11 no-op bump (#546); `disable_implicit_close` removed in #508 — strategies with `true` and no `close_strategies` now use implicit open-strategy close |
-| Runtime default | HL stop-loss auto-derive from `max_drawdown_pct` (#493); margin mode default `isolated` (#486); peer normalization of omitted stop/trailing fields (#494/#507); shared-coin CB drain clears pending **without** on-chain close when peers share the coin (#515) — operator must flatten manually; ATR(14) auto-injected + MISSING ENTRY ATR notifier for `tiered_tp_atr` (#525); paper trailing now books synthetic closes — previously silently ignored (#532); **`stop_loss_atr_mult=1.0` default for sole-owner HL perps with all 5 stop fields omitted (#562)** — set `0` to opt out |
-| Opt-in field | `trailing_stop_pct` (#502); `trailing_stop_atr_mult` (#507 — initial trigger deferred one cycle); open/close composition (#483); `stop_loss_margin_pct` (#490); `margin_per_trade_usd` (#520); `tiered_tp_atr_live` (#527 — `atr_source` param, falls back to entry ATR on warm-up); regime detection `regime.enabled` + `allowed_regimes` (#541/#546/#558 — `Trade.Regime` column added to trades on first start) |
+| Runtime default | HL stop-loss auto-derive from `max_drawdown_pct` (#493); margin mode default `isolated` (#486); peer normalization of omitted stop/trailing fields (#494/#507); shared-coin CB drain clears pending **without** on-chain close when peers share the coin (#515) — operator must flatten manually; ATR(14) auto-injected + MISSING ENTRY ATR notifier for `tiered_tp_atr` (#525); paper trailing now books synthetic closes — previously silently ignored (#532); **`stop_loss_atr_mult=1.0` default for sole-owner HL perps with all 5 stop fields omitted (#562)** — set `0` to opt out; **EntryATR backfill (#568)** — positions that were open before `Position.EntryATR` started being stamped (or that were opened via exchange UI) now receive a stamped ATR on the next scheduler cycle, which silently arms any `tiered_tp_atr` / `trailing_stop_atr_mult` / `stop_loss_atr_mult` close evaluator that was previously inert; **HL shared-coin reconcile (#565)** — `reconcileHyperliquidAccountPositions` now closes virtual peers when (a) on-chain qty ≈ 0 (full flat) or (b) the sole SL owner's residual matches non-owner peers' qty (owner's trigger fired). Ambiguous gaps still fall through to gap-only recording |
+| Opt-in field | `trailing_stop_pct` (#502); `trailing_stop_atr_mult` (#507 — initial trigger deferred one cycle); open/close composition (#483); `stop_loss_margin_pct` (#490); `margin_per_trade_usd` (#520); `tiered_tp_atr_live` (#527 — `atr_source` param, falls back to entry ATR on warm-up); regime detection `regime.enabled` + `allowed_regimes` (#541/#546/#558 — `Trade.Regime` column added to trades on first start); **`type: "manual"` strategy + `manual-open` / `manual-close` CLI (#569)** — operator-driven HL perps with auto-defaults SL@1×ATR + `tiered_tp_atr_live` TP1@2× / TP2@3×; cannot share a symbol with a live HL perps strategy (validation error). Init wizard adds a "manual trading on HL?" step |
 | Internal / no ops impact | Discord column truncation/aliases (#514); registry split into open+close (#511); `close_fraction` now honored — existing `close_strategies` configs partially close as specified (#521); Discord SL/TP1/TP2/ATR position lines (#528/#529/#561); partial-close DMs as `TRADE CLOSED` (#530/#531); backtester close registry with `--close-strategy`/`--close-params` (#535) |
 | Open-position constraint | `margin_mode`, exchange `leverage`, kill-switch identity changes; HL `trailing_stop_atr_mult` / `stop_loss_atr_mult` nil↔positive toggle blocked while open |
 
@@ -377,6 +377,8 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    /go-trader
    ./go-trader init
    ./go-trader init --json '{...}' --output scheduler/config.json
+   ./go-trader manual-open <strategy-id> --side long|short (--size N | --notional N | --margin N)
+   ./go-trader manual-close <strategy-id> [--qty N]
    sudo systemctl start|stop|restart|status go-trader
    journalctl -u go-trader -n 50 --no-pager
    curl -s localhost:8099/status | python3 -m json.tool
@@ -386,6 +388,44 @@ When the user says `/menu`, "show menu", "what can I configure", "what's availab
    .venv/bin/python3 backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
    .venv/bin/python3 backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
 ```
+
+---
+
+## Manual Trading (HL perps)
+
+Use `type: "manual"` on Hyperliquid when the operator wants to drive entries/exits by hand but still have the scheduler track P/L, run close evaluators (default SL@1×ATR + `tiered_tp_atr_live` TP1@2× / TP2@3×), and post Discord trade DMs (#569).
+
+Config skeleton (no `script` / `args` / `interval_seconds` needed — `LoadConfig` fills them):
+
+```json
+{"id":"hl-manual-btc","type":"manual","platform":"hyperliquid","symbol":"BTC","capital":1000,"leverage":3,"max_drawdown_pct":10}
+```
+
+Validation refuses a `type=manual` strategy that shares a symbol with a live HL perps strategy (would conflict on the shared on-chain position).
+
+CLI:
+
+```bash
+# Open — pick exactly one of --size, --notional, --margin
+./go-trader manual-open hl-manual-btc --side long --size 0.01
+./go-trader manual-open hl-manual-btc --side long --notional 500
+./go-trader manual-open hl-manual-btc --side short --margin 100   # margin × leverage = notional
+
+# Close — full or partial
+./go-trader manual-close hl-manual-btc            # full close
+./go-trader manual-close hl-manual-btc --qty 0.005
+
+# Record-only (operator placed the order on the HL UI, scheduler just tracks it)
+./go-trader manual-open  hl-manual-btc --side long --size 0.01 --record-only --fill-price 67800
+./go-trader manual-close hl-manual-btc --qty 0.005 --record-only --fill-price 68250
+```
+
+Notes:
+
+- `--record-only` skips the live HL order; pair with `--fill-price`. Stop-loss is **not** auto-armed in record-only mode — place the trigger on the HL UI manually.
+- Open is blocked when the portfolio kill switch is active or the strategy has a pending circuit-breaker close.
+- Fills are queued in `pending_manual_actions` and applied at the top of the next scheduler cycle (so a `--once` run is needed if the daemon is not running).
+- A 99% partial close is **not** silently collapsed into a full close — the queue carries an explicit `is_full_close` intent flag derived from the operator's `--qty`.
 
 ---
 
@@ -524,6 +564,7 @@ Platform conventions:
 | --- | --- | --- |
 | BinanceUS spot | none | `spot`, `shared_scripts/check_strategy.py` |
 | Hyperliquid perps | `hl-` | `perps`, `shared_scripts/check_hyperliquid.py` |
+| Hyperliquid manual | `hl-` | `manual` (#569), no script/interval; operator drives via `go-trader manual-open` / `manual-close`; auto-defaults SL@1×ATR + `tiered_tp_atr_live` (TP1@2× / TP2@3×) |
 | TopStep futures | `ts-` | `futures`, `shared_scripts/check_topstep.py` |
 | Robinhood | `rh-` | `spot` via `check_robinhood.py`, options via `check_options.py --platform=robinhood` |
 | OKX | `okx-` | `check_okx.py` for spot/perps, `check_options.py --platform=okx` for options |
@@ -666,7 +707,7 @@ Do not confuse this with the portfolio kill switch. Portfolio kill switch is por
 
 Kill-switch auto-reset: once the portfolio kill switch confirms all platforms are flat (`OnChainConfirmedFlat=true`), the next cycle clears virtual state and resumes trading. The bot posts `Virtual state cleared. Kill switch auto-reset; trading will resume next cycle.`
 
-When multiple HL strategies share a coin, kill-switch fills are split by **virtual quantity at snapshot time** (not capital weight, #469). Per-strategy CB on shared HL coins (#515) does not submit a close at all — reconcile manually if CB was expected to flatten.
+When multiple HL strategies share a coin, kill-switch fills are split by **virtual quantity at snapshot time** (not capital weight, #469). Per-strategy CB on shared HL coins (#515) does not submit a close at all — reconcile manually if CB was expected to flatten. Reconciliation (#565): if HL flattens the aggregate to ~0, or the sole SL owner's stop trigger fires (residual matches non-owner peers' virtual qty), the next cycle now closes the affected virtual peers automatically; ambiguous gaps still record a gap-only adjustment.
 
 Portfolio drawdown warnings repeat every cycle while drawdown remains in the warn band (`portfolio_risk.warn_threshold_pct`, default 60% of kill-switch). Silence by resolving the drawdown or changing the threshold.
 
