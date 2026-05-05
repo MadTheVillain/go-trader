@@ -1352,15 +1352,40 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	if r.ConsecutiveLosses >= 5 {
 		r.CircuitBreaker = true
 		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
-		setHyperliquidCircuitBreakerPending(sc, s, assist)
-		setOKXCircuitBreakerPending(sc, s, assist)
-		setRobinhoodCircuitBreakerPending(sc, s, assist)
-		setTopStepCircuitBreakerPending(sc, s, assist)
-		setOperatorRequiredCircuitBreakerPending(sc, s)
+	setHyperliquidCircuitBreakerPending(sc, s, assist)
+	setOKXCircuitBreakerPending(sc, s, assist)
+	setRobinhoodCircuitBreakerPending(sc, s, assist)
+	setTopStepCircuitBreakerPending(sc, s, assist)
+	setOperatorRequiredCircuitBreakerPending(sc, s)
 		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
 			forceCloseAllPositions(s, prices, logger)
 		}
 		return false, RiskReasonConsecutiveLosses
+	}
+
+	// Daily P&L circuit breaker: closes positions and blocks new trades.
+	if (sc != nil && r.DailyPnL >= sc.DailyProfitTarget && sc.DailyProfitTarget > 0) ||
+		(sc != nil && r.DailyPnL <= -sc.DailyLossLimit && sc.DailyLossLimit > 0) {
+		r.CircuitBreaker = true
+		r.CircuitBreakerUntil = now.Add(24 * time.Hour)
+	setHyperliquidCircuitBreakerPending(sc, s, assist)
+	setOKXCircuitBreakerPending(sc, s, assist)
+	setRobinhoodCircuitBreakerPending(sc, s, assist)
+	setTopStepCircuitBreakerPending(sc, s, assist)
+	setOperatorRequiredCircuitBreakerPending(sc, s)
+		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
+			forceCloseAllPositions(s, prices, logger)
+		}
+		limitType := ""
+		limitVal := 0.0
+		if r.DailyPnL >= sc.DailyProfitTarget && sc.DailyProfitTarget > 0 {
+			limitType = "profit target"
+			limitVal = sc.DailyProfitTarget
+		} else {
+			limitType = "loss limit"
+			limitVal = sc.DailyLossLimit
+		}
+		return false, fmt.Sprintf("daily %s hit: $%.2f (current P&L=$%.2f)", limitType, limitVal, r.DailyPnL)
 	}
 
 	return true, ""

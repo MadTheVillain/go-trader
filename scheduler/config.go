@@ -215,6 +215,8 @@ type StrategyConfig struct {
 	CapitalPct             float64                `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
 	InitialCapital         float64                `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
 	MaxDrawdownPct         float64                `json:"max_drawdown_pct"`
+	DailyProfitTarget       float64                `json:"daily_profit_target,omitempty"` // daily P&L ceiling — circuit breaker fires when reached
+	DailyLossLimit          float64                `json:"daily_loss_limit,omitempty"`   // daily P&L floor — circuit breaker fires when reached
 	IntervalSeconds        int                    `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
 	HTFFilter              bool                   `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
 	AllowShorts            bool                   `json:"allow_shorts,omitempty"`               // perps only: opt-in to bidirectional execution — signal=-1 from flat opens a short, long+(-1) closes-and-flips. Default false preserves close-long-only behavior for strategies like triple_ema that emit -1 only as a long-exit (#328)
